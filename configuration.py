@@ -54,6 +54,14 @@ def validate_config(data):
         raise ValueError("rebalance는 객체여야 합니다.")
     for key, default, upper in [("cash_target_percent", 0, 100), ("drift_threshold_pp", 5, 100), ("cash_usd", 0, 1e15), ("contribution_usd", 0, 1e15)]:
         reb[key] = bounded(reb.get(key, default), 0, upper, key)
+    extra_targets = reb.setdefault('position_targets', {})
+    if not isinstance(extra_targets, dict):
+        raise ValueError('position_targets는 종목별 목표 비중 객체여야 합니다.')
+    for symbol, target in extra_targets.items():
+        if not re.fullmatch(r'[A-Z0-9^][A-Z0-9.^=\-]{0,29}', symbol):
+            raise ValueError('position_targets 티커 형식을 확인하세요.')
+        if target is not None:
+            bounded(target, 0, 100, symbol + '.target_percent')
     assets = data.get("assets")
     if not isinstance(assets, list) or not 1 <= len(assets) <= 24:
         raise ValueError("assets: 1~24개 종목을 입력하세요.")
@@ -83,7 +91,7 @@ def validate_config(data):
 
 def settings_from_config(config):
     return {"quantities": {a["symbol"]: a["quantity"] for a in config["assets"]},
-            "targets": {a["symbol"]: a["target_percent"] for a in config["assets"]},
+            "targets": {**config['rebalance'].get('position_targets', {}), **{a["symbol"]: a["target_percent"] for a in config["assets"]}},
             "cash": config["rebalance"]["cash_usd"], "contribution": config["rebalance"]["contribution_usd"],
             "cash_target": config["rebalance"]["cash_target_percent"], "threshold": config["rebalance"]["drift_threshold_pp"]}
 
@@ -128,6 +136,8 @@ class ConfigStore:
             for a in config["assets"]:
                 s = a["symbol"]
                 a["quantity"], a["target_percent"] = settings["quantities"][s], settings["targets"][s]
+            configured_symbols = {a['symbol'] for a in config['assets']}
+            config['rebalance']['position_targets'] = {s: value for s, value in settings['targets'].items() if s not in configured_symbols}
             config["rebalance"].update(cash_usd=settings["cash"], contribution_usd=settings["contribution"],
                                        cash_target_percent=settings["cash_target"], drift_threshold_pp=settings["threshold"])
             validate_config(config)

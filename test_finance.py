@@ -2,7 +2,7 @@ import math
 import unittest
 from unittest.mock import patch, MagicMock
 from finance import SYMBOLS, indicators, rebalance, validate_settings
-from kb import checked_body, parse_account, protect, device_header, Client, KBResponseError
+from kb import checked_body, parse_account, parse_domestic, protect, device_header, Client, KBResponseError
 
 
 def response(body):
@@ -52,7 +52,9 @@ class FinanceTests(unittest.TestCase):
         result = parse_account(b, c)
         self.assertEqual(result["quantities"]["QQQ"], 1.25)
         self.assertEqual(result["cash"], 123.45)
-        self.assertEqual(result["excluded"], 1)
+        self.assertEqual(result["excluded"], 0)
+        self.assertEqual(result['quantities']['NVDA'], 1)
+        self.assertEqual({p['symbol'] for p in result['positions']}, {'QQQ', 'NVDA'})
         b["dataBody"]["nxt_key"] = "more"
         with self.assertRaises(ValueError):
             parse_account(b, c)
@@ -82,6 +84,32 @@ class FinanceTests(unittest.TestCase):
             checked_body({'dataHeader': header})
         self.assertIn('ipAddr', str(context.exception))
         self.assertNotIn('secret-value', str(context.exception))
+
+    def test_unwatched_usd_holdings_and_krw_cash_are_retained(self):
+        balance = response({'Record2': [{'is_cd': 'VTI', 'is_nm': 'Total Market', 'crncy_clsf_nm': 'USD',
+                                        'frgn_hld_q_p6': '2.500000', 'now_prc_p4': '200.0000'}]})
+        cash = response({'Record1': [{'crncy_cd': 'USD', 'fcrncy_tfnd': '0.00'},
+                                    {'crncy_cd': 'KRW', 'fcrncy_tfnd': '5000.00'}]})
+        account = parse_account(balance, cash, ('QQQ',))
+        self.assertEqual(account['quantities']['VTI'], 2.5)
+        self.assertEqual(account['positions'][0]['price'], 200)
+        self.assertEqual(account['cash_by_currency']['KRW'], 5000)
+        self.assertEqual(account['cash'], 0)
+        self.assertEqual(account['excluded'], 0)
+
+    def test_domestic_cash_is_informational_and_not_added_to_usd(self):
+        summary = parse_domestic(response({'tdy_tfnd_amt': '5000', 'do_psbl_csh': '4000', 'nxt2_dy_tfnd': '4500'}),
+                                 response({'nt_asts_val_amt': '15000'}))
+        self.assertEqual(summary['cashToday'], 5000)
+        self.assertEqual(summary['withdrawableCash'], 4000)
+        self.assertEqual(summary['accountNetAssets'], 15000)
+        self.assertEqual(summary['currency'], 'KRW')
+
+    def test_missing_domestic_field_is_not_fabricated_zero(self):
+        summary = parse_domestic(response({'tdy_tfnd_amt': '0'}), response({}))
+        self.assertEqual(summary['cashToday'], 0)
+        self.assertIsNone(summary['withdrawableCash'])
+        self.assertIsNone(summary['accountNetAssets'])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from ctypes import wintypes
 import getpass
 import argparse
 import json
+import math
 import os
 import re
 import socket
@@ -154,21 +155,45 @@ def parse_account(balance, cash, symbols=SYMBOLS):
         raise ValueError("KB 잔고 필드 검증 필요")
     quantities = {s: 0.0 for s in symbols}
     excluded = 0
+    positions = {}
     for row in b["Record2"]:
         symbol = str(row.get("is_cd", "")).strip().upper()
         if not symbol:
             continue
-        if symbol not in symbols:
+        if str(row.get("crncy_clsf_nm", "")).strip() != "USD":
             excluded += 1
             continue
-        if str(row.get("crncy_clsf_nm", "")).strip() != "USD":
-            raise ValueError("보유 ETF 통화가 USD가 아닙니다.")
-        quantities[symbol] += number(str(row["frgn_hld_q_p6"]).strip())
+        quantity = number(str(row['frgn_hld_q_p6']).strip())
+        quantities[symbol] = quantities.get(symbol, 0) + quantity
+        price = number(str(row.get('now_prc_p4', '0')).strip() or '0')
+        positions[symbol] = {'symbol': symbol, 'quantity': quantities[symbol], 'price': price,
+                             'name': str(row.get('is_nm', symbol)).strip(), 'currency': 'USD'}
     usd = [row for row in c["Record1"] if str(row.get("crncy_cd", "")).strip() == "USD"]
     if len(usd) != 1:
         raise ValueError("KB 달러 예수금 확인 필요")
     amount = number(str(usd[0]["fcrncy_tfnd"]).strip())
-    return {"quantities": quantities, "cash": amount, "excluded": excluded, "syncedAt": time.time()}
+    cash_by_currency = {str(row.get('crncy_cd', '')).strip(): number(str(row.get('fcrncy_tfnd', '0')).strip() or '0')
+                        for row in c['Record1'] if str(row.get('crncy_cd', '')).strip()}
+    return {"quantities": quantities, "cash": amount, "excluded": excluded, "syncedAt": time.time(),
+            'positions': list(positions.values()), 'cash_by_currency': cash_by_currency}
+
+
+def parse_domestic(deposit, summary):
+    deposit = checked_body(deposit)
+    summary = checked_body(summary)
+    def amount(body, key):
+        raw = body.get(key)
+        if raw is None or not str(raw).strip():
+            return None
+        value = float(str(raw).strip())
+        if not math.isfinite(value):
+            raise ValueError('KB 원화 잔고 숫자 형식 확인 필요')
+        return value
+    return {'available': True, 'currency': 'KRW',
+            'cashToday': amount(deposit, 'tdy_tfnd_amt'),
+            'withdrawableCash': amount(deposit, 'do_psbl_csh'),
+            'cashD2': amount(deposit, 'nxt2_dy_tfnd'),
+            'accountNetAssets': amount(summary, 'nt_asts_val_amt')}
 
 
 class Client:
@@ -178,7 +203,7 @@ class Client:
         self.fingerprint = None
 
     def post(self, path, body, headers=None):
-        if path not in ("/oauth2/token", "/api/v1/spqm2226", "/api/v1/skqm3350"):
+        if path not in ("/oauth2/token", "/api/v1/spqm2226", "/api/v1/skqm3350", "/api/v1/ssqm0004", "/api/v1/ssqm2952"):
             raise ValueError("허용되지 않은 API")
         payload = {"dataHeader": device_header(), "dataBody": body}
         request = urllib.request.Request(BASE + path, data=json.dumps(payload).encode(),
@@ -201,6 +226,12 @@ class Client:
             cash = self.post("/api/v1/skqm3350", {}, headers)
             result = parse_account(balance, cash, symbols)
             result['profile'] = profile
+            try:
+                deposit = self.post('/api/v1/ssqm0004', {}, headers)
+                summary = self.post('/api/v1/ssqm2952', {'excg_mktpr_ccd': 'A'}, headers)
+                result['domestic'] = parse_domestic(deposit, summary)
+            except Exception as exc:
+                result['domestic'] = {'available': False, 'error': exc.public_message if isinstance(exc, KBResponseError) else '원화 계좌 요약 조회를 확인하세요.'}
             return result
         except urllib.error.HTTPError as exc:
             if exc.code == 401:

@@ -17,6 +17,7 @@
       "history_range": {"enum": ["6mo", "1y", "2y", "5y", "10y", "max"]}
     }},
     "rebalance": {"type": "object", "properties": {
+      "position_targets": {"type": "object", "additionalProperties": {"type": ["number", "null"], "minimum": 0, "maximum": 100}},
       "cash_target_percent": {"type": "number", "minimum": 0, "maximum": 100},
       "drift_threshold_pp": {"type": "number", "minimum": 0, "maximum": 100},
       "cash_usd": {"type": "number", "minimum": 0, "maximum": 1000000000000000},

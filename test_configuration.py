@@ -103,6 +103,19 @@ class ConfigTests(unittest.TestCase):
             config, _, _ = store.apply_wallpaper_properties({'portfoliojson': {'value': '{"assets":[{"symbol":"QQQ","target_percent":100}]}'}}, revision)
             self.assertEqual(config['assets'][0]['quantity'], 12.5)
 
+    def test_account_only_target_is_saved_without_changing_watchlist(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.example.json'
+            path.write_text(json.dumps(EXAMPLE), 'utf-8')
+            store = ConfigStore(path)
+            config, revision, _ = store.load()
+            settings = settings_from_config(config)
+            settings['targets']['VTI'] = 100
+            store.save_settings(settings, revision)
+            saved, _, _ = store.load()
+            self.assertEqual(saved['rebalance']['position_targets'], {'VTI': 100})
+            self.assertNotIn('VTI', [a['symbol'] for a in saved['assets']])
+
 
 if __name__ == '__main__':
     unittest.main()

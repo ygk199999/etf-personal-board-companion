@@ -180,13 +180,32 @@ class Handler(BaseHTTPRequestHandler):
                         account['label'] = f"KB 연결 대기 · {account_config['profile']}"
                     account_matches = enabled and ACCOUNT and ACCOUNT.get('profile', 'default') == account_config['profile'] and all(s in ACCOUNT["quantities"] for s in symbols)
                     if account_matches:
-                        settings["quantities"] = {s: ACCOUNT["quantities"][s] for s in symbols}
+                        settings["quantities"] = dict(ACCOUNT['quantities'])
+                        for s in settings['quantities']:
+                            settings['targets'].setdefault(s, None)
                         settings["cash"] = ACCOUNT["cash"]
                         account.update(connected=True, label=f"KB 자동 조회 · {account_config['profile']}", syncedAt=ACCOUNT['syncedAt'], excluded=ACCOUNT['excluded'])
+                        account.update(positions=ACCOUNT.get('positions', []), cashByCurrency=ACCOUNT.get('cash_by_currency', {}), domestic=ACCOUNT.get('domestic', {}))
                     if enabled and configured and ACCOUNT_ERROR:
                         account["label"] = ACCOUNT_ERROR + (" · 이전 잔고" if ACCOUNT else " · 수동 입력 사용 중")
                         account["error"] = True
-                    portfolio = rebalance(settings, quotes, symbols)
+                    portfolio_symbols = tuple(dict.fromkeys([*symbols, *settings['quantities']]))
+                    if account_matches:
+                        portfolio_symbols = tuple(dict.fromkeys([
+                            *(s for s, quantity in settings['quantities'].items() if quantity > 0),
+                            *(s for s in symbols if settings['targets'].get(s) is not None)
+                        ]))
+                    portfolio_quotes = dict(quotes)
+                    if account_matches:
+                        for position in ACCOUNT.get('positions', []):
+                            if position['symbol'] not in portfolio_quotes and position['price'] > 0:
+                                portfolio_quotes[position['symbol']] = {'price': position['price']}
+                    portfolio = rebalance(settings, portfolio_quotes, portfolio_symbols)
+                    if account_matches and ACCOUNT.get('excluded'):
+                        portfolio['ready'] = False
+                        portfolio['reason'] = 'USD 이외의 보유 종목이 있어 전체 계좌 리밸런싱을 보류합니다.'
+                        for row in portfolio.get('rows', []):
+                            row['delta'] = row['shares'] = None
                     if enabled and ACCOUNT and (not account_matches or ACCOUNT_ERROR or time.time() - ACCOUNT["syncedAt"] > max(300, config["refresh_seconds"] * 2.5)):
                         portfolio["ready"] = False
                         portfolio["reason"] = "KB 잔고가 최신인지 확인할 수 없습니다. 연결 복구 후 리밸런싱을 계산합니다."
@@ -230,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_reply(200, {'ok': True})
             config = CONFIGS.load()[0]
             symbols = tuple(a["symbol"] for a in config["assets"])
+            symbols = tuple(dict.fromkeys([*symbols, *(ACCOUNT['quantities'] if config['account']['enabled'] and ACCOUNT else [])]))
             data = validate_settings(payload, symbols)
             if config['account']['enabled'] and ACCOUNT:
                 # Broker quantities are read-only; retain manual fallback values on disk.
