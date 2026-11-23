@@ -14,7 +14,7 @@ from urllib.parse import quote as quote_url
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from finance import indicators, validate_settings, rebalance
-from kb import Client, profile_store
+from kb import Client, profile_store, KBResponseError
 from configuration import ConfigStore, settings_from_config
 
 ROOT = Path(__file__).resolve().parent
@@ -126,7 +126,7 @@ def refresh_loop():
                     ACCOUNT, ACCOUNT_ERROR = snapshot, None
             except Exception as exc:
                 with LOCK:
-                    ACCOUNT_ERROR = f"KB 연결 확인 필요 ({type(exc).__name__})"
+                    ACCOUNT_ERROR = exc.public_message if isinstance(exc, KBResponseError) else f"KB 연결 확인 필요 ({type(exc).__name__})"
         last_run, last_key = time.time(), key
         STOP.wait(1)
 

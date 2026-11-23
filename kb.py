@@ -10,15 +10,37 @@ import getpass
 import argparse
 import json
 import os
+import re
+import socket
+import uuid
 from pathlib import Path
 import time
 import urllib.request
+import urllib.error
 
 from finance import SYMBOLS, number
 from configuration import validate_profile
 
 BASE = "https://developer.kbsec.com:32484"
 STORE = Path(os.environ.get("LOCALAPPDATA", ".")) / "ETFPersonalWallpaper" / "kb-credentials.dpapi"
+
+
+def device_header():
+    # Select this PC's actual route to KB; UDP connect sends no packet.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(('developer.kbsec.com', 32484))
+        address = route.getsockname()[0]
+    mac = '-'.join(f'{(uuid.getnode() >> shift) & 255:02X}' for shift in range(40, -1, -8))
+    return {'ipAddr': address, 'macAddr': mac}
+
+
+class KBResponseError(ValueError):
+    def __init__(self, header):
+        codes = [str(header.get(k, '')) for k in ('processFlag', 'processCode')]
+        codes = [code if re.fullmatch(r'[A-Za-z0-9_-]{1,20}', code) else '?' for code in codes]
+        field = re.search(r'\[dataHeader\.(ipAddr|macAddr)\]', str(header.get('processMessage', '')))
+        self.public_message = ('KB 요청 기기 정보 확인 필요: ' + field.group(1)) if field else 'KB 조회 응답 오류 (' + '/'.join(codes) + ')'
+        super().__init__(self.public_message)
 
 
 def profile_store(profile='default'):
@@ -116,7 +138,7 @@ def checked_body(response):
     header = response.get("dataHeader", {})
     if str(header.get("resultCode")) != "200" or header.get("processFlag") != "A":
         # Never include the response, token, account, or server message in UI/logs.
-        raise ValueError("KB 응답 오류 또는 조회 권한 부족")
+        raise KBResponseError(header)
     body = response.get("dataBody")
     if not isinstance(body, dict):
         raise ValueError("KB 응답 형식 확인 필요")
@@ -158,7 +180,7 @@ class Client:
     def post(self, path, body, headers=None):
         if path not in ("/oauth2/token", "/api/v1/spqm2226", "/api/v1/skqm3350"):
             raise ValueError("허용되지 않은 API")
-        payload = {"dataHeader": {"ipAddr": "", "macAddr": ""}, "dataBody": body}
+        payload = {"dataHeader": device_header(), "dataBody": body}
         request = urllib.request.Request(BASE + path, data=json.dumps(payload).encode(),
                     headers={"Content-Type": "application/json", **(headers or {})}, method="POST")
         with urllib.request.urlopen(request, timeout=20) as response:
@@ -180,8 +202,9 @@ class Client:
             result = parse_account(balance, cash, symbols)
             result['profile'] = profile
             return result
-        except Exception:
-            self.expires = 0
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                self.expires = 0
             raise
 
 

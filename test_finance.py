@@ -1,7 +1,8 @@
 import math
 import unittest
+from unittest.mock import patch, MagicMock
 from finance import SYMBOLS, indicators, rebalance, validate_settings
-from kb import checked_body, parse_account, protect
+from kb import checked_body, parse_account, protect, device_header, Client, KBResponseError
 
 
 def response(body):
@@ -65,6 +66,22 @@ class FinanceTests(unittest.TestCase):
     def test_http_200_is_not_business_success(self):
         with self.assertRaises(ValueError):
             checked_body({"dataHeader": {"resultCode": "200", "processFlag": "E"}, "dataBody": {}})
+
+    def test_kb_device_header_is_not_blank(self):
+        route = MagicMock()
+        route.__enter__.return_value = route
+        route.getsockname.return_value = ('192.0.2.10', 50000)
+        with patch('kb.socket.socket', return_value=route), patch('kb.uuid.getnode', return_value=0x102030405060):
+            self.assertEqual(device_header(), {'ipAddr': '192.0.2.10', 'macAddr': '10-20-30-40-50-60'})
+            route.connect.assert_called_once_with(('developer.kbsec.com', 32484))
+
+    def test_kb_error_never_echoes_response_messages(self):
+        header = {'resultCode': '200', 'processFlag': 'B', 'processCode': '9999',
+                  'processMessage': 'secret-value [dataHeader.ipAddr]'}
+        with self.assertRaises(KBResponseError) as context:
+            checked_body({'dataHeader': header})
+        self.assertIn('ipAddr', str(context.exception))
+        self.assertNotIn('secret-value', str(context.exception))
 
 
 if __name__ == "__main__":
