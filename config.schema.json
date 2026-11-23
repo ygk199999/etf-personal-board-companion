@@ -7,6 +7,10 @@
     "$schema": {"type": "string"},
     "title": {"type": "string", "minLength": 1, "maxLength": 80},
     "currency": {"const": "USD"},
+    "account": {"type": "object", "properties": {
+      "enabled": {"type": "boolean"},
+      "profile": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$"}
+    }},
     "refresh_seconds": {"type": "integer", "minimum": 60, "maximum": 3600},
     "indicators": {"type": "object", "properties": {
       "rsi_period": {"type": "integer", "minimum": 2, "maximum": 100},

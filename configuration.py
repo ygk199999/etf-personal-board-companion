@@ -12,6 +12,12 @@ CONFIG = ROOT / "config.json"
 RANGES = ("6mo", "1y", "2y", "5y", "10y", "max")
 
 
+def validate_profile(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', value):
+        raise ValueError('KB 프로필은 영문·숫자·밑줄·하이픈 1~32자로 입력하세요.')
+    return value
+
+
 def bounded(value, low, high, name, integer=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
         raise ValueError(f"{name}: {low}~{high} 범위의 숫자가 필요합니다.")
@@ -30,6 +36,11 @@ def validate_config(data):
     if data.get("currency", "USD") != "USD":
         raise ValueError("currency: 현재 USD 종목·달러 현금만 지원합니다.")
     data["title"], data["currency"] = title, "USD"
+    account = data.setdefault('account', {'enabled': True, 'profile': 'default'})
+    if not isinstance(account, dict) or not isinstance(account.get('enabled', True), bool):
+        raise ValueError('account.enabled는 true 또는 false여야 합니다.')
+    account.setdefault('enabled', True)
+    account['profile'] = validate_profile(account.get('profile', 'default'))
     data["refresh_seconds"] = bounded(data.get("refresh_seconds", 120), 60, 3600, "refresh_seconds", True)
     ind = data.setdefault("indicators", {})
     if not isinstance(ind, dict):
@@ -123,4 +134,57 @@ class ConfigStore:
             temp = self.path.with_suffix(".json.tmp")
             temp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", "utf-8")
             temp.replace(self.path)
+            return self.load()
+
+    def apply_wallpaper_properties(self, properties, revision):
+        """Apply public WE preset settings; credentials never enter presets."""
+        with self.lock:
+            config, current, error = self.load()
+            if error:
+                raise ValueError('config.json 오류를 먼저 수정하세요.')
+            if revision != current:
+                raise ValueError('설정 파일이 변경됐습니다. 프리셋을 다시 적용하세요.')
+            original = copy.deepcopy(config)
+            def value(name, default=None):
+                entry = properties.get(name, default)
+                return entry.get('value', default) if isinstance(entry, dict) else entry
+            raw = value('portfoliojson', '')
+            if not isinstance(raw, str) or len(raw) > 32768:
+                raise ValueError('설정 JSON은 32768자 이하 문자열이어야 합니다.')
+            if raw.strip():
+                preset = json.loads(raw)
+                if not isinstance(preset, dict):
+                    raise ValueError('설정 JSON은 객체여야 합니다.')
+                def no_secrets(item):
+                    if isinstance(item, dict):
+                        for key, child in item.items():
+                            if re.sub(r'[^a-z]', '', key.lower()) in ('appkey', 'appsecret', 'apikey', 'accesstoken', 'password'):
+                                raise ValueError('API 키는 프리셋에 저장하지 마세요. 로컬 KB 프로필을 사용하세요.')
+                            no_secrets(child)
+                    elif isinstance(item, list):
+                        for child in item: no_secrets(child)
+                no_secrets(preset)
+                allowed = {'title', 'currency', 'refresh_seconds', 'indicators', 'rebalance', 'assets', 'account'}
+                if set(preset) - allowed:
+                    raise ValueError('설정 JSON에 지원하지 않는 최상위 항목이 있습니다.')
+                for key, item in preset.items():
+                    if key in ('indicators', 'rebalance', 'account') and isinstance(item, dict):
+                        config.setdefault(key, {}).update(item)
+                    elif key == 'assets' and isinstance(item, list):
+                        previous = {a['symbol']: a for a in config['assets']}
+                        config['assets'] = [{**previous.get(a.get('symbol'), {}), **a} if isinstance(a, dict) else a for a in item]
+                    else:
+                        config[key] = item
+            if 'kbconnect' in properties:
+                enabled = value('kbconnect')
+                if not isinstance(enabled, bool):
+                    raise ValueError('KB 연결 속성은 true 또는 false여야 합니다.')
+                config['account']['enabled'] = enabled
+            if 'kbprofile' in properties:
+                config['account']['profile'] = validate_profile(value('kbprofile'))
+            config = validate_config(config)
+            if config != original:
+                temp = self.path.with_suffix('.json.tmp')
+                temp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', 'utf-8')
+                temp.replace(self.path)
             return self.load()

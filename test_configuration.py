@@ -74,6 +74,35 @@ class ConfigTests(unittest.TestCase):
         cfg = copy.deepcopy(EXAMPLE); cfg['assets'].append(copy.deepcopy(cfg['assets'][0]))
         with self.assertRaises(ValueError): validate_config(cfg)
 
+    def test_wallpaper_preset_selects_profile_without_secrets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.example.json'
+            path.write_text(json.dumps(EXAMPLE), 'utf-8')
+            store = ConfigStore(path)
+            _, revision, _ = store.load()
+            properties = {'portfoliojson': {'value': json.dumps({'assets': [{'symbol': 'VTI', 'target_percent': 100}]})},
+                          'kbconnect': {'value': True}, 'kbprofile': {'value': 'retirement'}}
+            config, revision, error = store.apply_wallpaper_properties(properties, revision)
+            self.assertIsNone(error)
+            self.assertEqual(config['account'], {'enabled': True, 'profile': 'retirement'})
+            self.assertEqual(config['assets'][0]['symbol'], 'VTI')
+            for unsafe in [{'appKey': 'not-a-key'}, {'account': {'appSecret': 'not-a-key'}}]:
+                with self.assertRaises(ValueError):
+                    store.apply_wallpaper_properties({'portfoliojson': {'value': json.dumps(unsafe)}}, revision)
+            with self.assertRaises(ValueError):
+                store.apply_wallpaper_properties({'kbprofile': {'value': '../outside'}}, revision)
+
+    def test_preset_partial_assets_keep_manual_quantity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.example.json'
+            data = copy.deepcopy(EXAMPLE)
+            data['assets'][0]['quantity'] = 12.5
+            path.write_text(json.dumps(data), 'utf-8')
+            store = ConfigStore(path)
+            _, revision, _ = store.load()
+            config, _, _ = store.apply_wallpaper_properties({'portfoliojson': {'value': '{"assets":[{"symbol":"QQQ","target_percent":100}]}'}}, revision)
+            self.assertEqual(config['assets'][0]['quantity'], 12.5)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,5 +1,5 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-py -3.13 kb.py
+py -3.13 kb.py --gui
 pause

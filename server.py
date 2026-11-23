@@ -14,7 +14,7 @@ from urllib.parse import quote as quote_url
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from finance import indicators, validate_settings, rebalance
-from kb import Client, STORE
+from kb import Client, profile_store
 from configuration import ConfigStore, settings_from_config
 
 ROOT = Path(__file__).resolve().parent
@@ -108,15 +108,20 @@ def refresh_loop():
             continue
         symbols = tuple(a["symbol"] for a in config["assets"])
         ind = config["indicators"]
-        key = (symbols, ind["history_range"], ind["rsi_period"], STORE.stat().st_mtime_ns if STORE.exists() else 0)
+        account_config = config['account']
+        store = profile_store(account_config['profile'])
+        if not account_config['enabled']:
+            with LOCK:
+                ACCOUNT, ACCOUNT_ERROR = None, None
+        key = (symbols, ind["history_range"], ind["rsi_period"], account_config['enabled'], account_config['profile'], store.stat().st_mtime_ns if store.exists() else 0)
         if key == last_key and time.time() - last_run < config["refresh_seconds"]:
             STOP.wait(1)
             continue
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(lambda s: refresh_one(s, ind["history_range"], ind["rsi_period"]), symbols))
-        if STORE.exists():
+        if account_config['enabled'] and store.exists():
             try:
-                snapshot = KB.snapshot(symbols)
+                snapshot = KB.snapshot(symbols, account_config['profile'])
                 with LOCK:
                     ACCOUNT, ACCOUNT_ERROR = snapshot, None
             except Exception as exc:
@@ -150,6 +155,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_host():
             return self.json_reply(403, {"error": "Local host only"})
         path = self.path.split("?")[0]
+        if path == '/ready.js':
+            return self.send_bytes(200, b'/* Local Companion ready. No account data. */', 'text/javascript; charset=utf-8')
         if path == "/api/state":
             try:
                 with LOCK:
@@ -161,16 +168,26 @@ class Handler(BaseHTTPRequestHandler):
                         if q.get("historyRange") != config["indicators"]["history_range"] or q.get("rsiPeriod") != config["indicators"]["rsi_period"]:
                             q.update(rsi=None, mdd=None, drawdown=None, history=[], error="지표 설정 변경 · 새 이력 조회 중")
                     account = {"connected": False, "label": "수동 입력 · KB 계좌 미연결"}
-                    account_matches = ACCOUNT and all(s in ACCOUNT["quantities"] for s in symbols)
+                    account_config = config['account']
+                    enabled = account_config['enabled']
+                    configured = profile_store(account_config['profile']).exists()
+                    account.update(enabled=enabled, configured=configured, profile=account_config['profile'])
+                    if enabled and not configured:
+                        account['label'] = f"KB 키 미등록 · {account_config['profile']}"
+                    elif not enabled:
+                        account['label'] = '수동 입력 · KB 연결 꺼짐'
+                    elif enabled:
+                        account['label'] = f"KB 연결 대기 · {account_config['profile']}"
+                    account_matches = enabled and ACCOUNT and ACCOUNT.get('profile', 'default') == account_config['profile'] and all(s in ACCOUNT["quantities"] for s in symbols)
                     if account_matches:
                         settings["quantities"] = {s: ACCOUNT["quantities"][s] for s in symbols}
                         settings["cash"] = ACCOUNT["cash"]
-                        account = {"connected": True, "label": "KB 자동 조회 · USD", "syncedAt": ACCOUNT["syncedAt"], "excluded": ACCOUNT["excluded"]}
-                    if ACCOUNT_ERROR:
+                        account.update(connected=True, label=f"KB 자동 조회 · {account_config['profile']}", syncedAt=ACCOUNT['syncedAt'], excluded=ACCOUNT['excluded'])
+                    if enabled and configured and ACCOUNT_ERROR:
                         account["label"] = ACCOUNT_ERROR + (" · 이전 잔고" if ACCOUNT else " · 수동 입력 사용 중")
                         account["error"] = True
                     portfolio = rebalance(settings, quotes, symbols)
-                    if ACCOUNT and (not account_matches or ACCOUNT_ERROR or time.time() - ACCOUNT["syncedAt"] > max(300, config["refresh_seconds"] * 2.5)):
+                    if enabled and ACCOUNT and (not account_matches or ACCOUNT_ERROR or time.time() - ACCOUNT["syncedAt"] > max(300, config["refresh_seconds"] * 2.5)):
                         portfolio["ready"] = False
                         portfolio["reason"] = "KB 잔고가 최신인지 확인할 수 없습니다. 연결 복구 후 리밸런싱을 계산합니다."
                         for row in portfolio.get("rows", []):
@@ -198,17 +215,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed_host() or self.headers.get("X-Session-Key") != SESSION_KEY:
             return self.json_reply(403, {"error": "요청을 다시 시도하세요."})
-        if self.path != "/api/settings":
+        if self.path not in ("/api/settings", "/api/preset"):
             return self.json_reply(404, {"error": "Not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 8192:
+            if not 0 < length <= 49152:
                 raise ValueError("설정 크기 오류")
             payload = json.loads(self.rfile.read(length))
+            if self.path == '/api/preset':
+                props = payload.get('properties', {})
+                if not isinstance(props, dict) or set(props) - {'portfoliojson', 'kbconnect', 'kbprofile'}:
+                    raise ValueError('지원하지 않는 월페이퍼 속성입니다.')
+                CONFIGS.apply_wallpaper_properties(props, payload.get('configRevision'))
+                return self.json_reply(200, {'ok': True})
             config = CONFIGS.load()[0]
             symbols = tuple(a["symbol"] for a in config["assets"])
             data = validate_settings(payload, symbols)
-            if ACCOUNT:
+            if config['account']['enabled'] and ACCOUNT:
                 # Broker quantities are read-only; retain manual fallback values on disk.
                 data["quantities"] = {a["symbol"]: a["quantity"] for a in config["assets"]}
                 data["cash"] = config["rebalance"]["cash_usd"]

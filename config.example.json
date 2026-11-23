@@ -7,6 +7,10 @@
     "rsi_period": 14,
     "history_range": "1y"
   },
+  "account": {
+    "enabled": true,
+    "profile": "default"
+  },
   "rebalance": {
     "cash_target_percent": 0,
     "drift_threshold_pp": 5,

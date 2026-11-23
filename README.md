@@ -16,6 +16,11 @@ Wallpaper Engine에 시세·RSI·MDD·보유 자산 데이터를 제공하는 Wi
 설정은 자동 반영됩니다. 필드 설명은 `CONFIG_GUIDE.txt`를 참고하세요.
 개인 설정 파일 `config.json`은 Git에서 제외되며 예제에는 실제 보유내역이 없습니다.
 
+Wallpaper Engine 속성의 `포트폴리오 설정 JSON`, `KB 계좌 자동 연결`, `KB 로컬 프로필 이름`도
+네이티브 JSON 프리셋으로 저장할 수 있습니다. 속성 변경은 로컬 서버에 반영됩니다.
+인증키는 프리셋에 포함하지 않습니다. 기본 프로필 이름은 `default`이며,
+다른 프로필을 등록하려면 `py -3.13 kb.py --profile 프로필이름`을 실행합니다.
+
 ## KB 연동
 
 KB Open API 사용 신청 후 `Setup KB API.cmd`에서 인증키를 입력합니다.

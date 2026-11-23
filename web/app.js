@@ -6,6 +6,7 @@ const timestamp=ts=>ts?new Date(ts*1000).toLocaleString('ko-KR'):'—';
 const shortDate=ts=>ts?new Date(ts*1000).toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'}):'—';
 const rangeName=r=>({'6mo':'6개월','1y':'1년','2y':'2년','5y':'5년','10y':'10년',max:'전체'})[r]||r;
 let state=null,symbols=[],info={},busy=false,structureKey='',dialogRevision=null;
+let nativeProperties={},nativeVersion=0,appliedNativeVersion=0,nativeBusy=false,nativePresetError='';
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!=null)e.textContent=text;return e;}
 function rebuild(config){
  const key=JSON.stringify([config.assets.map(a=>[a.symbol,a.name,a.category,a.color]),config.indicators]);
@@ -36,7 +37,7 @@ function render(){
  }
  $('connection').textContent=bad?`${bad}개 종목 시세 대기·지연`:`시세 수신 · ${config.refresh_seconds}초 간격`;$('connection').className=`feed-status ${bad?'warning':'good'}`;
  $('account').textContent=state.account.label;$('account').className=`feed-status ${state.account.connected&&!state.account.error?'good':''}`;
- $('configError').hidden=!state.configError;$('configError').textContent=state.configError?`${state.configError} 마지막 정상 설정을 표시합니다.`:'';
+ const configMessage=nativePresetError||(state.configError?`${state.configError} 마지막 정상 설정을 표시합니다.`:'');$('configError').hidden=!configMessage;$('configError').textContent=configMessage;
  $('updated').textContent=fetched.length?`Yahoo Finance · 조회 ${new Date(Math.min(...fetched)*1000).toLocaleTimeString('ko-KR',{hour12:false})}`:'Yahoo Finance · 시세 대기 중';
  $('method').textContent=`RSI ${config.indicators.rsi_period} · MDD ${rangeName(config.indicators.history_range)} · 조정 완료 일봉 · 시세 지연 가능`;
  $('total').textContent=money(p.total);$('cash').textContent=money(state.settings.cash);$('contribution').textContent=money(state.settings.contribution);$('targetCash').textContent=money(p.targetCash);
@@ -55,11 +56,32 @@ function render(){
  if(p.ready&&bad)$('portfolioStatus').textContent+=' · 시세 지연으로 이전 값이 포함될 수 있습니다.';
  $('scopeNote').textContent=`설정한 ${symbols.length}개 종목 + USD 현금 기준${state.account.excluded?` · 계좌의 다른 ${state.account.excluded}개 보유 항목 제외`:''} · 수수료·세금 미반영 · 소수점 이론 수량`;
 }
-async function poll(){if(busy)return;busy=true;try{const r=await fetch('/api/state'),data=await r.json();if(!r.ok)throw Error(data.error);state=data;$('offline').hidden=true;render();}catch(e){$('offline').hidden=false;$('offline').textContent=e.message||'데이터 서비스 연결 끊김';$('connection').textContent='연결 끊김 · 마지막 수신 값';}finally{busy=false;if(window.parent!==window)window.parent.postMessage({type:'etf-board-ready'},'*');}}
+async function poll(){if(busy)return;busy=true;try{const r=await fetch('/api/state'),data=await r.json();if(!r.ok)throw Error(data.error);state=data;$('offline').hidden=true;render();}catch(e){$('offline').hidden=false;$('offline').textContent=e.message||'데이터 서비스 연결 끊김';$('connection').textContent='연결 끊김 · 마지막 수신 값';}finally{busy=false;if(window.parent!==window)window.parent.postMessage({type:'etf-board-ready'},'*');if(state)void applyNativeProperties();}}
 $('settingsButton').onclick=()=>{if(!state)return;const f=$('settingsForm');dialogRevision=state.configRevision;for(const s of symbols){f.elements[`qty-${s}`].value=state.settings.quantities[s];f.elements[`qty-${s}`].disabled=state.account.connected;f.elements[`target-${s}`].value=state.settings.targets[s]??'';}for(const key of['cash','contribution','cash_target','threshold'])f.elements[key].value=state.settings[key];f.elements.cash.disabled=state.account.connected;$('settingsHelp').textContent=state.account.connected?'보유 수량과 현금은 KB 조회값입니다. 목표와 투입금은 config.json 또는 이 창에서 편집합니다.':'종목 추가·삭제는 프로젝트의 config.json에서 편집합니다. 이 화면에서 저장한 값도 같은 파일에 반영됩니다.';$('saveError').textContent='';updateSum();$('settings').showModal();};
 $('closeSettings').onclick=()=>$('settings').close();
 function updateSum(){const f=$('settingsForm');let sum=Number(f.elements.cash_target.value),complete=true;for(const s of symbols){const v=f.elements[`target-${s}`]?.value;if(v==null||v==='')complete=false;sum+=Number(v||0);}$('targetSum').textContent=`종목 + 현금 목표 합계 ${fmt(sum)}%${complete&&Math.abs(sum-100)<1e-6?' · 계산 가능':' · 합계 100%일 때 계산합니다.'}`;}
 $('settingsForm').addEventListener('input',updateSum);
 $('settingsForm').onsubmit=async e=>{e.preventDefault();const f=e.target,data={quantities:{},targets:{},configRevision:dialogRevision};for(const s of symbols){data.quantities[s]=Number(f.elements[`qty-${s}`].value);data.targets[s]=f.elements[`target-${s}`].value===''?null:Number(f.elements[`target-${s}`].value);}for(const key of['cash','contribution','cash_target','threshold'])data[key]=Number(f.elements[key].value);try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Key':state.sessionKey},body:JSON.stringify(data)});if(!r.ok)throw Error((await r.json()).error);$('settings').close();await poll();}catch(e){$('saveError').textContent=e.message||'설정을 저장하지 못했습니다.';}};
 function clock(){const now=new Date();$('clock').textContent=now.toLocaleTimeString('ko-KR',{hour12:false,hour:'2-digit',minute:'2-digit'});$('today').textContent=now.toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'});}
+async function applyNativeProperties(){
+ if(!state||nativeBusy||nativeVersion===appliedNativeVersion)return;
+ nativeBusy=true;const version=nativeVersion,properties=JSON.parse(JSON.stringify(nativeProperties));
+ try{
+  const fresh=await(await fetch('/api/state')).json();
+  const r=await fetch('/api/preset',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Key':fresh.sessionKey},body:JSON.stringify({properties,configRevision:fresh.configRevision})});
+  if(!r.ok)throw Error((await r.json()).error);
+  nativePresetError='';
+ }catch(e){nativePresetError=`Wallpaper Engine 프리셋: ${e.message}`;}
+ finally{appliedNativeVersion=version;nativeBusy=false;await poll();}
+}
+function receiveNativeProperties(properties){
+ let changed=false;
+ for(const name of ['portfoliojson','kbconnect','kbprofile'])if(Object.hasOwn(properties,name)&&JSON.stringify(nativeProperties[name])!==JSON.stringify(properties[name])){nativeProperties[name]=properties[name];changed=true;}
+ if(changed){nativeVersion++;void applyNativeProperties();}
+}
+window.wallpaperPropertyListener={applyUserProperties:receiveNativeProperties};
+if(location.hash.startsWith('#we=')){
+ try{receiveNativeProperties(JSON.parse(decodeURIComponent(location.hash.slice(4))));}catch(e){nativePresetError='Wallpaper Engine 설정을 읽지 못했습니다.';}
+ history.replaceState(null,'',location.pathname+location.search);
+}
 clock();setInterval(clock,1000);poll();setInterval(poll,3000);
