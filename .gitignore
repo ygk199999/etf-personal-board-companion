@@ -1,0 +1,14 @@
+/config.json
+*.dpapi
+*.dpapi.*
+.env
+.env.*
+__pycache__/
+*.py[cod]
+*.log
+*.pid
+*.tmp
+.copilot/
+.taste-skill/
+original-market-board/
+backups/

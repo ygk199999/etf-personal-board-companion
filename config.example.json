@@ -1,0 +1,50 @@
+{
+  "$schema": "./config.schema.json",
+  "title": "내 투자 대시보드",
+  "currency": "USD",
+  "refresh_seconds": 120,
+  "indicators": {
+    "rsi_period": 14,
+    "history_range": "1y"
+  },
+  "rebalance": {
+    "cash_target_percent": 0,
+    "drift_threshold_pp": 5,
+    "cash_usd": 0,
+    "contribution_usd": 0
+  },
+  "assets": [
+    {
+      "symbol": "QQQ",
+      "name": "Invesco QQQ Trust",
+      "category": "나스닥 100",
+      "color": "#d3b375",
+      "target_percent": null,
+      "quantity": 0
+    },
+    {
+      "symbol": "SPY",
+      "name": "SPDR S&P 500 ETF Trust",
+      "category": "S&P 500",
+      "color": "#8fbca5",
+      "target_percent": null,
+      "quantity": 0
+    },
+    {
+      "symbol": "TLT",
+      "name": "iShares 20+ Year Treasury Bond",
+      "category": "미국 장기 국채",
+      "color": "#92afc4",
+      "target_percent": null,
+      "quantity": 0
+    },
+    {
+      "symbol": "SCHD",
+      "name": "Schwab US Dividend Equity ETF",
+      "category": "미국 배당주",
+      "color": "#be9d86",
+      "target_percent": null,
+      "quantity": 0
+    }
+  ]
+}
