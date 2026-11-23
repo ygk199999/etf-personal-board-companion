@@ -1,5 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
+const apiPath=path=>(location.protocol==='file:'?'http://127.0.0.1:8766':'')+path;
 const fmt=(n,d=2)=>n==null?'—':Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const pct=n=>n==null?'—':`${n>0?'+':''}${fmt(n)}%`, money=n=>n==null?'—':`$${fmt(n)}`;
 const timestamp=ts=>ts?new Date(ts*1000).toLocaleString('ko-KR'):'—';
@@ -71,19 +72,19 @@ function render(){
  if(p.ready&&bad)$('portfolioStatus').textContent+=' · 시세 지연으로 이전 값이 포함될 수 있습니다.';
  $('scopeNote').textContent=state.account.connected?`실제 USD 보유 자산 기준 · 원화 예수금은 별도 표시${state.account.excluded?` · USD 이외 보유 ${state.account.excluded}개 항목 미반영`:''} · 수수료·세금 미반영`:`설정한 ${symbols.length}개 종목 + USD 현금 기준 · 수수료·세금 미반영 · 소수점 이론 수량`;
 }
-async function poll(){if(busy)return;busy=true;try{const r=await fetch('/api/state'),data=await r.json();if(!r.ok)throw Error(data.error);state=data;$('offline').hidden=true;render();}catch(e){$('offline').hidden=false;$('offline').textContent=e.message||'데이터 서비스 연결 끊김';$('connection').textContent='연결 끊김 · 마지막 수신 값';}finally{busy=false;if(window.parent!==window)window.parent.postMessage({type:'etf-board-ready'},'*');if(state)void applyNativeProperties();}}
+async function poll(){if(busy)return;busy=true;try{const r=await fetch(apiPath('/api/state')),data=await r.json();if(!r.ok)throw Error(data.error);state=data;$('offline').hidden=true;render();}catch(e){$('offline').hidden=false;$('offline').textContent=e.message||'데이터 서비스 연결 끊김';$('connection').textContent='연결 끊김 · 마지막 수신 값';}finally{busy=false;if(window.parent!==window)window.parent.postMessage({type:'etf-board-ready'},'*');if(state)void applyNativeProperties();}}
 $('settingsButton').onclick=()=>{if(!state)return;const f=$('settingsForm');dialogRevision=state.configRevision;for(const s of portfolioSymbols){f.elements[`qty-${s}`].value=state.settings.quantities[s]||0;f.elements[`qty-${s}`].disabled=state.account.connected;f.elements[`target-${s}`].value=state.settings.targets[s]??'';}for(const key of['cash','contribution','cash_target','threshold'])f.elements[key].value=state.settings[key];f.elements.cash.disabled=state.account.connected;$('settingsHelp').textContent=state.account.connected?'시세 목록과 실제 보유 자산을 함께 표시합니다. 실제 보유 종목의 목표도 설정하세요. 원화 현금은 달러 비중 계산에서 제외됩니다.':'종목 추가·삭제는 프로젝트의 config.json에서 편집합니다. 이 화면에서 저장한 값도 같은 파일에 반영됩니다.';$('saveError').textContent='';updateSum();$('settings').showModal();};
 $('closeSettings').onclick=()=>$('settings').close();
 function updateSum(){const f=$('settingsForm');let sum=Number(f.elements.cash_target.value),complete=true;for(const s of portfolioSymbols){const v=f.elements[`target-${s}`]?.value;if((v==null||v==='')&&state.settings.quantities[s]>0)complete=false;sum+=Number(v||0);}$('targetSum').textContent=`종목 + 현금 목표 합계 ${fmt(sum)}%${complete&&Math.abs(sum-100)<1e-6?' · 계산 가능':' · 실제 보유 종목의 목표와 합계 100%가 필요합니다.'}`;}
 $('settingsForm').addEventListener('input',updateSum);
-$('settingsForm').onsubmit=async e=>{e.preventDefault();const f=e.target,data={quantities:{},targets:{},configRevision:dialogRevision};for(const s of portfolioSymbols){data.quantities[s]=Number(f.elements[`qty-${s}`].value);data.targets[s]=f.elements[`target-${s}`].value===''?null:Number(f.elements[`target-${s}`].value);}for(const key of['cash','contribution','cash_target','threshold'])data[key]=Number(f.elements[key].value);try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Key':state.sessionKey},body:JSON.stringify(data)});if(!r.ok)throw Error((await r.json()).error);$('settings').close();await poll();}catch(e){$('saveError').textContent=e.message||'설정을 저장하지 못했습니다.';}};
+$('settingsForm').onsubmit=async e=>{e.preventDefault();const f=e.target,data={quantities:{},targets:{},configRevision:dialogRevision};for(const s of portfolioSymbols){data.quantities[s]=Number(f.elements[`qty-${s}`].value);data.targets[s]=f.elements[`target-${s}`].value===''?null:Number(f.elements[`target-${s}`].value);}for(const key of['cash','contribution','cash_target','threshold'])data[key]=Number(f.elements[key].value);try{const r=await fetch(apiPath('/api/settings'),{method:'POST',headers:{'Content-Type':'application/json','X-Session-Key':state.sessionKey},body:JSON.stringify(data)});if(!r.ok)throw Error((await r.json()).error);$('settings').close();await poll();}catch(e){$('saveError').textContent=e.message||'설정을 저장하지 못했습니다.';}};
 function clock(){const now=new Date();$('clock').textContent=now.toLocaleTimeString('ko-KR',{hour12:false,hour:'2-digit',minute:'2-digit'});$('today').textContent=now.toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'});}
 async function applyNativeProperties(){
  if(!state||nativeBusy||nativeVersion===appliedNativeVersion)return;
  nativeBusy=true;const version=nativeVersion,properties=JSON.parse(JSON.stringify(nativeProperties));
  try{
-  const fresh=await(await fetch('/api/state')).json();
-  const r=await fetch('/api/preset',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Key':fresh.sessionKey},body:JSON.stringify({properties,configRevision:fresh.configRevision})});
+  const fresh=await(await fetch(apiPath('/api/state'))).json();
+  const r=await fetch(apiPath('/api/preset'),{method:'POST',headers:{'Content-Type':'application/json','X-Session-Key':fresh.sessionKey},body:JSON.stringify({properties,configRevision:fresh.configRevision})});
   if(!r.ok)throw Error((await r.json()).error);
   nativePresetError='';
  }catch(e){nativePresetError=`Wallpaper Engine 프리셋: ${e.message}`;}
@@ -99,4 +100,5 @@ if(location.hash.startsWith('#we=')){
  try{receiveNativeProperties(JSON.parse(decodeURIComponent(location.hash.slice(4))));}catch(e){nativePresetError='Wallpaper Engine 설정을 읽지 못했습니다.';}
  history.replaceState(null,'',location.pathname+location.search);
 }
+document.querySelector('footer a[download]').href=apiPath('/api/config');
 clock();setInterval(clock,1000);poll();setInterval(poll,3000);
