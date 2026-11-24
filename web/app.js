@@ -86,7 +86,7 @@ function renderDipPlan(){
  const p=state.dipPlan;panel.hidden=!p?.enabled;if(!p?.enabled)return;
  panel.replaceChildren();
  const heading=node('div','dip-heading');
- heading.append(node('strong','',`${p.symbol} 하락장 분할 매수`),node('span','',`대기자금 ${fmt(p.cashKrw,0)}원`));
+ heading.append(node('strong','',`${p.strategyName||'하락장 분할 매수'} · ${p.symbol}`),node('span','',`대기자금 ${fmt(p.cashKrw,0)}원`));
  panel.append(heading,node('p','dip-status',p.message));
  if(p.ready){
   panel.append(node('p','dip-reference',`${p.cycle}회차 · 기준 고점 $${fmt(p.referenceClose)} (${shortDate(p.referenceAt)}) · 고점 대비 ${pct(p.drawdown)} · 완료 종가 ${shortDate(p.signalAt)}`));
@@ -94,7 +94,8 @@ function renderDipPlan(){
   for(const row of p.rows){const step=node('div',`dip-step ${row.status}`);step.append(node('b','',`−${fmt(row.level,0)}%`),node('strong','',`${fmt(row.amountKrw,0)}원`),node('span','',({completed:'체결 기록됨',due:'매수 조건 충족',waiting:'대기'})[row.status]));steps.append(step);}
   panel.append(steps);
  }
- panel.append(node('p','dip-reference',`월 적립 유지 · 단계마다 남은 현금의 ${fmt(p.spendPercent,0)}% · 실제 체결은 상단 JSON 편집에서 기록`));
+ const rule=p.allocationMode==='equal_parts'?`준비자금 ${p.parts}등분 · 고점 회복 후 남은 자금으로 새 회차`:`단계마다 남은 현금의 ${fmt(p.spendPercent,0)}%`;
+ panel.append(node('p','dip-reference',`월 적립 유지 · ${rule} · 실제 체결은 상단 JSON 편집에서 기록`));
 }
 let manualRevision=null;
 function renderManualAccounts(){

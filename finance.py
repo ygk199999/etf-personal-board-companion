@@ -9,9 +9,12 @@ def dip_plan(config, quote, runtime):
     import copy
     import time
     state = copy.deepcopy(runtime)
+    equal_parts = config.get('allocation_mode') == 'equal_parts'
     balance = config['starting_cash_krw'] + config['cash_adjustment_krw'] - sum(f['amount_krw'] for f in config['executions'])
     base = {'enabled': config['enabled'], 'cashKrw': balance, 'symbol': config['signal_symbol'],
-            'spendPercent': config['spend_remaining_percent'], 'ready': False, 'rows': []}
+            'spendPercent': config['spend_remaining_percent'], 'ready': False, 'rows': [],
+            'strategyName': config.get('strategy_name', '하락장 분할 매수'),
+            'allocationMode': config.get('allocation_mode', 'remaining_percent'), 'parts': len(config['levels_percent'])}
     if not config['enabled']:
         return state, {**base, 'message': '하락장 추가 매수 꺼짐'}
     bars = (quote or {}).get('completedCloses', [])
@@ -22,6 +25,8 @@ def dip_plan(config, quote, runtime):
     if time.time() - quote.get('fetchedAt', 0) > 300 or time.time() - last_ts > 7*86400:
         return state, {**base, 'message': '일봉 갱신 지연 · 매수 판단 보류'}
     identity = [config['signal_symbol'], config['lookback_sessions']]
+    if equal_parts:
+        identity += ['equal_parts', config['levels_percent']]
     if state.get('identity') != identity:
         history = bars[-config['lookback_sessions']:]
         peak_ts, peak = max(history, key=lambda b: b[1])
@@ -29,7 +34,7 @@ def dip_plan(config, quote, runtime):
         cycle = max([state.get('cycle', 0), *(f['cycle'] for f in config['executions'])], default=0)
         cycle = cycle + 1 if state.get('identity') else max(1, cycle)
         state = {'identity': identity, 'cycle': cycle, 'anchor': peak, 'anchorAt': peak_ts,
-                 'active': False, 'processedAt': last_ts-1}
+                 'active': False, 'processedAt': last_ts-1, 'cycleBudget': balance}
     # Rebase a stored reference if a split adjusted its historical closing price.
     adjusted_anchor = next((p for ts,p in bars if ts == state['anchorAt']), None)
     if adjusted_anchor is not None:
@@ -41,6 +46,7 @@ def dip_plan(config, quote, runtime):
             state['cycle'] += 1
             state['active'] = False
         if not state['active']:
+            state['cycleBudget'] = balance + sum(f['amount_krw'] for f in config['executions'] if f['cycle']==state['cycle'])
             history = [b for b in bars if b[0] <= ts][-config['lookback_sessions']:]
             peak_ts, peak = max(history, key=lambda b: b[1])
             state['anchor'], state['anchorAt'] = peak, peak_ts
@@ -50,11 +56,17 @@ def dip_plan(config, quote, runtime):
     close = bars[-1][1]
     drawdown = max(0., (1-close/state['anchor'])*100)
     completed = {f['level_percent']: f for f in config['executions'] if f['cycle']==state['cycle']}
+    if not state['active']:
+        state['cycleBudget'] = balance + sum(f['amount_krw'] for f in completed.values())
     projected = balance
     rows = []
-    for level in config['levels_percent']:
+    budget = state.get('cycleBudget', balance + sum(f['amount_krw'] for f in completed.values()))
+    count = len(config['levels_percent'])
+    unit = math.floor(budget / count)
+    for index, level in enumerate(config['levels_percent']):
         fill = completed.get(level)
-        amount = fill['amount_krw'] if fill else round(projected*config['spend_remaining_percent']/100)
+        planned = (unit if index < count-1 else round(budget-unit*(count-1))) if equal_parts else round(projected*config['spend_remaining_percent']/100)
+        amount = fill['amount_krw'] if fill else min(projected, planned)
         if not fill:
             projected -= amount
         reached = drawdown >= level-1e-8

@@ -71,6 +71,37 @@ class DipPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_dip_strategy({**self.config,'executions':[{**fill,'amount_krw':10000001}]})
 
+    def test_equal_five_parts_and_actual_fills(self):
+        from finance import dip_plan
+        self.config.update(allocation_mode='equal_parts', levels_percent=[15,20,25,30,35])
+        runtime, plan = dip_plan(self.config, self.quote([100,65]), {})
+        self.assertEqual([r['amountKrw'] for r in plan['rows']], [2000000]*5)
+        self.assertTrue(all(r['status']=='due' for r in plan['rows']))
+        self.assertEqual(plan['cashKrw'],10000000)
+        self.config['executions']=[{'cycle':1,'level_percent':15,'amount_krw':2000000,'date':'2026-11-24'}]
+        runtime,plan=dip_plan(self.config,self.quote([100,65]),runtime)
+        self.assertEqual(plan['cashKrw'],8000000)
+        self.assertEqual(plan['rows'][0]['status'],'completed')
+        self.assertEqual([r['amountKrw'] for r in plan['rows'][1:]], [2000000]*4)
+        # Restart with the persisted state must keep each tranche constant.
+        import json
+        _,again=dip_plan(self.config,self.quote([100,65]),json.loads(json.dumps(runtime)))
+        self.assertEqual(again,plan)
+
+    def test_equal_parts_recovery_and_insufficient_cash(self):
+        from finance import dip_plan
+        self.config.update(allocation_mode='equal_parts', levels_percent=[15,20,25,30,35])
+        runtime,_=dip_plan(self.config,self.quote([100,80]),{})
+        self.config['executions']=[{'cycle':1,'level_percent':15,'amount_krw':2000000,'date':'2026-11-24'}]
+        quote=self.quote([100,80,100]);quote['completedCloses']=[(t+86400,p) for t,p in quote['completedCloses']]
+        runtime,plan=dip_plan(self.config,quote,runtime)
+        self.assertEqual(plan['cycle'],2)
+        self.assertEqual(plan['cashKrw'],8000000)
+        self.assertEqual([r['amountKrw'] for r in plan['rows']], [1600000]*5)
+        self.config['cash_adjustment_krw']=-7000000
+        _,plan=dip_plan(self.config,quote,runtime)
+        self.assertLessEqual(sum(r['amountKrw'] for r in plan['rows']),1000000)
+
 
 class FinanceTests(unittest.TestCase):
     def test_drawdown_is_path_dependent(self):

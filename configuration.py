@@ -84,6 +84,12 @@ def validate_dip_strategy(value):
     if not isinstance(value, dict):
         raise ValueError('dip_strategy는 JSON 객체여야 합니다.')
     value = copy.deepcopy(value)
+    mode = value.setdefault('allocation_mode', 'remaining_percent')
+    if mode not in ('remaining_percent', 'equal_parts'):
+        raise ValueError('allocation_mode는 remaining_percent 또는 equal_parts입니다.')
+    name = value.setdefault('strategy_name', '하락장 분할 매수')
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+        raise ValueError('strategy_name은 1~80자입니다.')
     if not isinstance(value.setdefault('enabled', False), bool):
         raise ValueError('dip_strategy.enabled는 true 또는 false입니다.')
     symbol = value.setdefault('signal_symbol', 'QQQM')
@@ -110,7 +116,7 @@ def validate_dip_strategy(value):
         bounded(fill.get('cycle'), 1, 1e6, '체결 cycle', True)
         level = fill.get('level_percent')
         bounded(level, .01, 99, '체결 level_percent')
-        if level not in levels or (fill['cycle'], level) in seen:
+        if (fill['cycle'], level) in seen:
             raise ValueError('체결 낙폭을 확인하세요. 같은 회차·단계는 한 건으로 합산하세요.')
         seen.add((fill['cycle'], level))
         bounded(fill.get('amount_krw'), .01, 1e15, '실제 체결 amount_krw')

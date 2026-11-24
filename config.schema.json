@@ -305,6 +305,17 @@
               }
             }
           }
+        },
+        "strategy_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "allocation_mode": {
+          "enum": [
+            "remaining_percent",
+            "equal_parts"
+          ]
         }
       }
     }

@@ -13,12 +13,15 @@
     "lookback_sessions": 252,
     "starting_cash_krw": 0,
     "cash_adjustment_krw": 0,
+    "strategy_name": "황현희식 지수 분할 매수",
+    "allocation_mode": "equal_parts",
     "spend_remaining_percent": 30,
     "levels_percent": [
-      10,
       15,
       20,
-      30
+      25,
+      30,
+      35
     ],
     "executions": []
   },
