@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import re
 import threading
+from datetime import date
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "config.json"
@@ -24,6 +25,132 @@ def bounded(value, low, high, name, integer=False):
     if integer and value != int(value):
         raise ValueError(f"{name}: 정수가 필요합니다.")
     return int(value) if integer else value
+
+
+def validate_manual_accounts(accounts):
+    if not isinstance(accounts, list) or len(accounts) > 2:
+        raise ValueError('manual_accounts: ISA·IRP 계좌를 최대 2개 입력하세요.')
+    accounts = copy.deepcopy(accounts)
+    seen = set()
+    for account in accounts:
+        if not isinstance(account, dict) or account.get('id') not in ('isa', 'irp') or account['id'] in seen:
+            raise ValueError('수기 계좌 id는 중복 없이 isa 또는 irp여야 합니다.')
+        seen.add(account['id'])
+        account.setdefault('name', account['id'].upper())
+        if not isinstance(account['name'], str) or not 1 <= len(account['name'].strip()) <= 80:
+            raise ValueError('수기 계좌 이름은 1~80자로 입력하세요.')
+        if account.setdefault('currency', 'KRW') != 'KRW':
+            raise ValueError('ISA·IRP 수기 입력은 원화(KRW) 기준입니다.')
+        stamp = account.setdefault('as_of', '')
+        if not isinstance(stamp, str):
+            raise ValueError('as_of는 YYYY-MM-DD 날짜로 입력하세요.')
+        if stamp:
+            try:
+                if date.fromisoformat(stamp).isoformat() != stamp:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError('as_of는 YYYY-MM-DD 날짜로 입력하세요.') from None
+        for key, default, limit in [('cash', None, 1e15), ('contribution', 0, 1e15),
+                                    ('cash_target_percent', None, 100), ('drift_threshold_pp', 5, 100)]:
+            value = account.setdefault(key, default)
+            if value is None and key in ('cash', 'cash_target_percent'):
+                continue
+            bounded(value, 0, limit, '수기 계좌 ' + key)
+        holdings = account.setdefault('holdings', [])
+        if not isinstance(holdings, list) or len(holdings) > 60:
+            raise ValueError('수기 계좌 holdings는 최대 60개 종목의 배열입니다.')
+        codes = set()
+        for holding in holdings:
+            if not isinstance(holding, dict):
+                raise ValueError('수기 보유 종목은 JSON 객체로 입력하세요.')
+            symbol = holding.get('symbol')
+            if not isinstance(symbol, str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-]{0,29}', symbol) or symbol in codes:
+                raise ValueError('수기 종목코드는 중복 없이 영문 대문자·숫자로 입력하세요.')
+            codes.add(symbol)
+            name = holding.setdefault('name', symbol)
+            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+                raise ValueError('수기 종목 이름은 1~100자로 입력하세요.')
+            bounded(holding.get('value'), 0, 1e15, '종목 평가금액 value')
+            for key, limit in [('quantity', 1e15), ('target_percent', 100)]:
+                value = holding.setdefault(key, None)
+                if value is not None:
+                    bounded(value, 0, limit, '수기 종목 ' + key)
+            if holding['quantity'] == 0 and holding['value'] > 0:
+                raise ValueError('평가금액이 있는 종목의 수량은 양수 또는 null로 입력하세요.')
+    return accounts
+
+
+def validate_dip_strategy(value):
+    if not isinstance(value, dict):
+        raise ValueError('dip_strategy는 JSON 객체여야 합니다.')
+    value = copy.deepcopy(value)
+    if not isinstance(value.setdefault('enabled', False), bool):
+        raise ValueError('dip_strategy.enabled는 true 또는 false입니다.')
+    symbol = value.setdefault('signal_symbol', 'QQQM')
+    if not isinstance(symbol, str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-]{0,29}', symbol):
+        raise ValueError('하락장 신호 종목코드를 확인하세요.')
+    value['lookback_sessions'] = bounded(value.get('lookback_sessions', 252), 20, 500, 'lookback_sessions', True)
+    value['starting_cash_krw'] = bounded(value.get('starting_cash_krw', 0), 0, 1e15, 'starting_cash_krw')
+    value['cash_adjustment_krw'] = bounded(value.get('cash_adjustment_krw', 0), -1e15, 1e15, 'cash_adjustment_krw')
+    value['spend_remaining_percent'] = bounded(value.get('spend_remaining_percent', 30), .01, 100, 'spend_remaining_percent')
+    levels = value.setdefault('levels_percent', [10, 15, 20, 30])
+    if not isinstance(levels, list) or not 1 <= len(levels) <= 12:
+        raise ValueError('levels_percent는 1~12개 낙폭의 배열입니다.')
+    for level in levels:
+        bounded(level, .01, 99, '하락장 매수 낙폭')
+    if levels != sorted(set(levels)):
+        raise ValueError('매수 낙폭은 중복 없이 오름차순으로 입력하세요.')
+    fills = value.setdefault('executions', [])
+    if not isinstance(fills, list) or len(fills) > 1000:
+        raise ValueError('executions는 최대 1000건의 체결 기록 배열입니다.')
+    seen = set()
+    for fill in fills:
+        if not isinstance(fill, dict):
+            raise ValueError('체결 기록은 JSON 객체여야 합니다.')
+        bounded(fill.get('cycle'), 1, 1e6, '체결 cycle', True)
+        level = fill.get('level_percent')
+        bounded(level, .01, 99, '체결 level_percent')
+        if level not in levels or (fill['cycle'], level) in seen:
+            raise ValueError('체결 낙폭을 확인하세요. 같은 회차·단계는 한 건으로 합산하세요.')
+        seen.add((fill['cycle'], level))
+        bounded(fill.get('amount_krw'), .01, 1e15, '실제 체결 amount_krw')
+        stamp = fill.get('date')
+        try:
+            if not isinstance(stamp, str) or date.fromisoformat(stamp).isoformat() != stamp:
+                raise ValueError()
+        except ValueError:
+            raise ValueError('체결 date는 YYYY-MM-DD로 입력하세요.') from None
+    balance = value['starting_cash_krw'] + value['cash_adjustment_krw'] - sum(f['amount_krw'] for f in fills)
+    if balance < 0:
+        raise ValueError('하락장 대기자금보다 체결 기록 합계가 큽니다.')
+    return value
+
+
+def manual_portfolios(accounts):
+    """Calculate each KRW account from entered valuations; never mix with live USD assets."""
+    results = []
+    for account in accounts:
+        cash = account['cash']
+        total = sum(h['value'] for h in account['holdings']) + (cash or 0)
+        targets = [h['target_percent'] for h in account['holdings']] + [account['cash_target_percent']]
+        valid = all(v is not None for v in targets) and abs(sum(v or 0 for v in targets) - 100) < 1e-6
+        ready = valid and cash is not None and total + account['contribution'] > 0
+        gaps = [abs((h['value'] / total * 100 if total else 0) - (h['target_percent'] or 0)) for h in account['holdings']]
+        cash_gap = abs(((cash or 0) / total * 100 if total else 0) - (account['cash_target_percent'] or 0))
+        max_gap = max([cash_gap, *gaps]) if valid else None
+        needs = ready and (max_gap >= account['drift_threshold_pp'] or account['contribution'] > 0 or total == 0)
+        rows = []
+        for h in account['holdings']:
+            delta = ((total + account['contribution']) * h['target_percent'] / 100 - h['value'] if needs else 0) if ready else None
+            shares = delta * h['quantity'] / h['value'] if delta is not None and h['value'] > 0 and h['quantity'] else None
+            rows.append({**h, 'weight': h['value'] / total * 100 if total and cash is not None else None,
+                         'delta': delta, 'shares': shares})
+        results.append({'id': account['id'], 'name': account['name'], 'asOf': account['as_of'],
+                        'currency': 'KRW', 'source': 'manual', 'cash': cash,
+                        'total': total if cash is not None else None, 'rows': rows,
+                        'ready': ready, 'needsRebalance': needs, 'maxGap': max_gap,
+                        'reason': '' if ready else '현금(없으면 0), 보유 평가금액과 종목·현금 목표 합계 100%를 입력하세요.'})
+    return results
 
 
 def validate_config(data):
@@ -86,6 +213,9 @@ def validate_config(data):
         target = asset.setdefault("target_percent", None)
         if target is not None:
             bounded(target, 0, 100, f"{symbol}.target_percent")
+    data['manual_accounts'] = validate_manual_accounts(data.get('manual_accounts', [
+        {'id': 'isa', 'name': 'KB ISA'}, {'id': 'irp', 'name': 'KB IRP'}]))
+    data['dip_strategy'] = validate_dip_strategy(data.get('dip_strategy', {}))
     return data
 
 
@@ -125,6 +255,17 @@ class ConfigStore:
                 if self.good is None:
                     raise ValueError(self.error) from None
             return copy.deepcopy(self.good), self.revision, self.error
+
+    def save_manual_accounts(self, accounts, revision):
+        with self.lock:
+            config, current, error = self.load()
+            if error or current != revision:
+                raise ValueError('설정이 변경됐거나 오류가 있습니다. 편집창을 닫고 다시 열어주세요.')
+            config['manual_accounts'] = validate_manual_accounts(accounts)
+            temp = self.path.with_suffix('.json.tmp')
+            temp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', 'utf-8')
+            temp.replace(self.path)
+            return self.load()
 
     def save_settings(self, settings, revision):
         with self.lock:
@@ -174,11 +315,11 @@ class ConfigStore:
                     elif isinstance(item, list):
                         for child in item: no_secrets(child)
                 no_secrets(preset)
-                allowed = {'title', 'currency', 'refresh_seconds', 'indicators', 'rebalance', 'assets', 'account'}
+                allowed = {'title', 'currency', 'refresh_seconds', 'indicators', 'rebalance', 'assets', 'account', 'manual_accounts', 'dip_strategy'}
                 if set(preset) - allowed:
                     raise ValueError('설정 JSON에 지원하지 않는 최상위 항목이 있습니다.')
                 for key, item in preset.items():
-                    if key in ('indicators', 'rebalance', 'account') and isinstance(item, dict):
+                    if key in ('indicators', 'rebalance', 'account', 'dip_strategy') and isinstance(item, dict):
                         config.setdefault(key, {}).update(item)
                     elif key == 'assets' and isinstance(item, list):
                         previous = {a['symbol']: a for a in config['assets']}

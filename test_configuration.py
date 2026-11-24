@@ -117,5 +117,89 @@ class ConfigTests(unittest.TestCase):
             self.assertNotIn('VTI', [a['symbol'] for a in saved['assets']])
 
 
+class ManualAccountTests(unittest.TestCase):
+    def sample(self):
+        from configuration import validate_manual_accounts
+        return validate_manual_accounts([{'id': 'isa', 'cash': 100, 'as_of': '2026-11-23',
+            'cash_target_percent': 10, 'contribution': 100, 'drift_threshold_pp': 0,
+            'holdings': [{'symbol': '069500', 'name': 'ETF', 'quantity': 9, 'value': 900, 'target_percent': 90}]},
+            {'id': 'irp'}])
+
+    def test_accounts_remain_separate_and_unknown_is_not_zero(self):
+        from configuration import manual_portfolios
+        isa, irp = manual_portfolios(self.sample())
+        self.assertEqual(isa['total'], 1000)
+        self.assertAlmostEqual(isa['rows'][0]['delta'], 90)
+        self.assertAlmostEqual(isa['rows'][0]['shares'], .9)
+        self.assertTrue(isa['ready'])
+        self.assertIsNone(irp['total'])
+        self.assertFalse(irp['ready'])
+
+    def test_unknown_quantity_still_calculates_amount(self):
+        from configuration import manual_portfolios
+        accounts = self.sample()
+        accounts[0]['holdings'][0]['quantity'] = None
+        row = manual_portfolios(accounts)[0]['rows'][0]
+        self.assertEqual(row['delta'], 90)
+        self.assertIsNone(row['shares'])
+
+    def test_input_validation(self):
+        from configuration import validate_manual_accounts
+        for invalid in [None, [{'id': 'isa'}, {'id': 'isa'}], [{'id': 'irp', 'cash': -1}],
+                        [{'id': 'irp', 'cash': float('nan')}], [{'id': 'irp', 'as_of': '2026-02-30'}],
+                        [{'id': 'irp', 'holdings': [{'symbol': 'A', 'value': -1}]}]]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_manual_accounts(invalid)
+
+    def test_manual_save_preserves_broker_and_watchlist_and_conflict(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.example.json'
+            path.write_text(json.dumps(EXAMPLE), 'utf-8')
+            store = ConfigStore(path)
+            old, revision, _ = store.load()
+            saved, new_revision, _ = store.save_manual_accounts(self.sample(), revision)
+            self.assertEqual(saved['account'], old['account'])
+            self.assertEqual(saved['assets'], old['assets'])
+            self.assertEqual(len(saved['manual_accounts']), 2)
+            with self.assertRaises(ValueError):
+                store.save_manual_accounts([], revision)
+            props = {'portfoliojson': {'value': json.dumps({'manual_accounts': [{'id': 'irp', 'cash': 0}]})}}
+            saved, _, _ = store.apply_wallpaper_properties(props, new_revision)
+            self.assertEqual(saved['manual_accounts'][0]['id'], 'irp')
+
+
+class CompanionIntegrationTests(unittest.TestCase):
+    def test_fx_failure_retains_previous_rate_and_marks_error(self):
+        from unittest.mock import patch
+        import server
+        previous = {'rate': 1400, 'fetchedAt': 1}
+        with patch.object(server, 'FX', previous), patch.object(server, 'fetch_json', side_effect=ValueError()):
+            server.refresh_fx()
+            self.assertEqual(server.FX['rate'], 1400)
+            self.assertEqual(server.FX['fetchedAt'], 1)
+            self.assertTrue(server.FX['error'])
+
+    def test_fx_checks_currency_and_positive_rate(self):
+        from unittest.mock import patch
+        import server
+        for currency, rate in [('USD', 1400), ('KRW', -1), ('KRW', float('nan'))]:
+            sample = {'chart': {'result': [{'meta': {'currency': currency, 'regularMarketPrice': rate}}]}}
+            with self.subTest(currency=currency, rate=rate), patch.object(server, 'FX', {'rate': None}), patch.object(server, 'fetch_json', return_value=sample):
+                server.refresh_fx()
+                self.assertIsNone(server.FX['rate'])
+                self.assertTrue(server.FX['error'])
+
+    def test_native_editor_opens_only_live_config_and_debounces(self):
+        from unittest.mock import patch
+        import server
+        with patch.object(server, 'LAST_EDITOR_OPEN', 0), patch.object(server.time, 'monotonic', return_value=100), patch.object(server.subprocess, 'Popen') as launch:
+            server.open_config_editor()
+            server.open_config_editor()
+            launch.assert_called_once()
+            args, kwargs = launch.call_args
+            self.assertEqual(args[0][1], str(server.CONFIGS.path.resolve()))
+            self.assertFalse(kwargs['shell'])
+
+
 if __name__ == '__main__':
     unittest.main()

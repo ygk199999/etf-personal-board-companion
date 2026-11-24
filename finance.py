@@ -4,6 +4,68 @@ import math
 SYMBOLS = ("QQQ", "SPY", "TLT", "SCHD")
 
 
+def dip_plan(config, quote, runtime):
+    """Read-only purchase guidance. Only recorded actual fills consume the reserve."""
+    import copy
+    import time
+    state = copy.deepcopy(runtime)
+    balance = config['starting_cash_krw'] + config['cash_adjustment_krw'] - sum(f['amount_krw'] for f in config['executions'])
+    base = {'enabled': config['enabled'], 'cashKrw': balance, 'symbol': config['signal_symbol'],
+            'spendPercent': config['spend_remaining_percent'], 'ready': False, 'rows': []}
+    if not config['enabled']:
+        return state, {**base, 'message': '하락장 추가 매수 꺼짐'}
+    bars = (quote or {}).get('completedCloses', [])
+    if not bars or (quote or {}).get('error'):
+        return state, {**base, 'message': '완료 일봉 조회 대기 · 매수 판단 보류'}
+    last_ts = bars[-1][0]
+    # Allow market holidays/weekends, but never reuse an indefinitely stale feed.
+    if time.time() - quote.get('fetchedAt', 0) > 300 or time.time() - last_ts > 7*86400:
+        return state, {**base, 'message': '일봉 갱신 지연 · 매수 판단 보류'}
+    identity = [config['signal_symbol'], config['lookback_sessions']]
+    if state.get('identity') != identity:
+        history = bars[-config['lookback_sessions']:]
+        peak_ts, peak = max(history, key=lambda b: b[1])
+        # A changed signal starts a distinct cycle; preserve all previously spent cash.
+        cycle = max([state.get('cycle', 0), *(f['cycle'] for f in config['executions'])], default=0)
+        cycle = cycle + 1 if state.get('identity') else max(1, cycle)
+        state = {'identity': identity, 'cycle': cycle, 'anchor': peak, 'anchorAt': peak_ts,
+                 'active': False, 'processedAt': last_ts-1}
+    # Rebase a stored reference if a split adjusted its historical closing price.
+    adjusted_anchor = next((p for ts,p in bars if ts == state['anchorAt']), None)
+    if adjusted_anchor is not None:
+        state['anchor'] = adjusted_anchor
+    for ts, close in bars:
+        if ts <= state.get('processedAt', 0):
+            continue
+        if state['active'] and close >= state['anchor']:
+            state['cycle'] += 1
+            state['active'] = False
+        if not state['active']:
+            history = [b for b in bars if b[0] <= ts][-config['lookback_sessions']:]
+            peak_ts, peak = max(history, key=lambda b: b[1])
+            state['anchor'], state['anchorAt'] = peak, peak_ts
+            if (1-close/peak)*100 >= config['levels_percent'][0]-1e-8:
+                state['active'] = True
+        state['processedAt'] = ts
+    close = bars[-1][1]
+    drawdown = max(0., (1-close/state['anchor'])*100)
+    completed = {f['level_percent']: f for f in config['executions'] if f['cycle']==state['cycle']}
+    projected = balance
+    rows = []
+    for level in config['levels_percent']:
+        fill = completed.get(level)
+        amount = fill['amount_krw'] if fill else round(projected*config['spend_remaining_percent']/100)
+        if not fill:
+            projected -= amount
+        reached = drawdown >= level-1e-8
+        rows.append({'level': level, 'amountKrw': amount, 'status': 'completed' if fill else 'due' if reached and amount>0 else 'waiting'})
+    due = [r for r in rows if r['status']=='due']
+    message = f"{len(due)}개 단계 조건 충족 · 실제 매수 후 체결 기록 필요" if due else '다음 낙폭 조건 대기 · 정기 적립 유지'
+    return state, {**base, 'ready': True, 'cycle': state['cycle'], 'referenceClose': state['anchor'],
+                   'referenceAt': state['anchorAt'], 'signalClose': close, 'signalAt': last_ts,
+                   'drawdown': -drawdown, 'rows': rows, 'message': message}
+
+
 def number(value):
     if isinstance(value, bool):
         raise ValueError("숫자를 입력하세요.")

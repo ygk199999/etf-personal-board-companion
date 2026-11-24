@@ -7,15 +7,16 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import threading
 import time
 import urllib.request
 from urllib.parse import quote as quote_url
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from finance import indicators, validate_settings, rebalance
+from finance import indicators, validate_settings, rebalance, dip_plan
 from kb import Client, profile_store, KBResponseError
-from configuration import ConfigStore, settings_from_config
+from configuration import ConfigStore, settings_from_config, manual_portfolios
 
 ROOT = Path(__file__).resolve().parent
 STATE = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "ETFPersonalWallpaper"
@@ -23,6 +24,15 @@ STATE.mkdir(parents=True, exist_ok=True)
 CONFIGS = ConfigStore()
 LOCK = threading.RLock()
 MARKET = {}
+DIP_QUOTE = {}
+DIP_STATE_PATH = STATE / 'dip-strategy-state.json'
+try:
+    DIP_RUNTIME = json.loads(DIP_STATE_PATH.read_text('utf-8'))
+    if not isinstance(DIP_RUNTIME, dict):
+        DIP_RUNTIME = {}
+except (OSError, ValueError):
+    DIP_RUNTIME = {}
+FX = {'pair': 'USD/KRW', 'rate': None, 'source': 'Yahoo Finance · 참고 환율'}
 ACCOUNT = None
 ACCOUNT_ERROR = None
 KB = Client()
@@ -32,6 +42,18 @@ ASSET_NAMES = {"/": ("index.html", "text/html; charset=utf-8"),
                "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                "/styles.css": ("styles.css", "text/css; charset=utf-8")}
 SESSION_KEY = os.urandom(24).hex()
+LAST_EDITOR_OPEN = 0
+
+
+def open_config_editor():
+    """Open only the live config in a native editor; no caller-supplied path or command."""
+    global LAST_EDITOR_OPEN
+    with LOCK:
+        if time.monotonic() - LAST_EDITOR_OPEN < 3:
+            return
+        editor = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'notepad.exe'
+        subprocess.Popen([str(editor), str(CONFIGS.path.resolve())], shell=False)
+        LAST_EDITOR_OPEN = time.monotonic()
 
 
 def fetch_json(url):
@@ -82,7 +104,31 @@ def market_quote(symbol, history_range="1y", rsi_period=14):
     return {"symbol": symbol, "price": price, "change": (price / previous - 1) * 100 if previous else None,
             "quoteAt": regular_ts, "fetchedAt": time.time(), "indicatorAt": pairs[-1][0],
             "historyStart": pairs[0][0], "history": prices, "source": "Yahoo Finance (비공식)",
+            "completedCloses": [(ts, float(p)) for ts, p in raw_pairs if p > 0 and not (today_start <= ts <= today_end and time.time() < today_end + 120)],
             "error": None, "historyRange": history_range, "rsiPeriod": rsi_period, **stats}
+
+
+def refresh_dip(symbol):
+    global DIP_QUOTE
+    try:
+        value = market_quote(symbol, '2y', 14)
+        with LOCK:
+            DIP_QUOTE = value
+    except Exception:
+        with LOCK:
+            DIP_QUOTE = {**DIP_QUOTE, 'error': '신호 일봉 조회 실패'}
+
+
+def current_dip_plan(config):
+    global DIP_RUNTIME
+    quote = DIP_QUOTE if DIP_QUOTE.get('symbol') == config['signal_symbol'] else {}
+    runtime, plan = dip_plan(config, quote, DIP_RUNTIME)
+    if runtime != DIP_RUNTIME:
+        temp = DIP_STATE_PATH.with_suffix('.tmp')
+        temp.write_text(json.dumps(runtime), 'utf-8')
+        os.replace(temp, DIP_STATE_PATH)
+        DIP_RUNTIME = runtime
+    return plan
 
 
 def refresh_one(symbol, history_range="1y", rsi_period=14):
@@ -95,6 +141,22 @@ def refresh_one(symbol, history_range="1y", rsi_period=14):
             old = dict(MARKET.get(symbol, {"symbol": symbol}))
             old["error"] = f"시세 조회 실패 ({type(exc).__name__})"
             MARKET[symbol] = old
+
+
+def refresh_fx():
+    global FX
+    try:
+        data = fetch_json('https://query1.finance.yahoo.com/v8/finance/chart/KRW%3DX?range=1d&interval=1d')
+        meta = data['chart']['result'][0]['meta']
+        rate = float(meta['regularMarketPrice'])
+        if meta.get('currency') != 'KRW' or not math.isfinite(rate) or rate <= 0:
+            raise ValueError('Invalid USD/KRW rate')
+        with LOCK:
+            FX = {'pair': 'USD/KRW', 'rate': rate, 'quoteAt': meta.get('regularMarketTime'),
+                  'fetchedAt': time.time(), 'source': 'Yahoo Finance · 참고 환율', 'error': None}
+    except Exception:
+        with LOCK:
+            FX = {**FX, 'error': '환율 갱신 실패 · 이전 조회값'}
 
 
 def refresh_loop():
@@ -113,12 +175,18 @@ def refresh_loop():
         if not account_config['enabled']:
             with LOCK:
                 ACCOUNT, ACCOUNT_ERROR = None, None
-        key = (symbols, ind["history_range"], ind["rsi_period"], account_config['enabled'], account_config['profile'], store.stat().st_mtime_ns if store.exists() else 0)
+        dip = config['dip_strategy']
+        key = (symbols, ind["history_range"], ind["rsi_period"], dip['enabled'], dip['signal_symbol'], account_config['enabled'], account_config['profile'], store.stat().st_mtime_ns if store.exists() else 0)
         if key == last_key and time.time() - last_run < config["refresh_seconds"]:
             STOP.wait(1)
             continue
         with ThreadPoolExecutor(max_workers=4) as pool:
+            fx_task = pool.submit(refresh_fx)
+            dip_task = pool.submit(refresh_dip, dip['signal_symbol']) if dip['enabled'] else None
             list(pool.map(lambda s: refresh_one(s, ind["history_range"], ind["rsi_period"]), symbols))
+            fx_task.result()
+            if dip_task:
+                dip_task.result()
         if account_config['enabled'] and store.exists():
             try:
                 snapshot = KB.snapshot(symbols, account_config['profile'])
@@ -211,8 +279,9 @@ class Handler(BaseHTTPRequestHandler):
                         portfolio["reason"] = "KB 잔고가 최신인지 확인할 수 없습니다. 연결 복구 후 리밸런싱을 계산합니다."
                         for row in portfolio.get("rows", []):
                             row["delta"] = row["shares"] = None
-                return self.json_reply(200, {"quotes": quotes, "settings": settings,
-                    "portfolio": portfolio, "sessionKey": SESSION_KEY,
+                    dip_result = current_dip_plan(config['dip_strategy'])
+                return self.json_reply(200, {"quotes": quotes, "settings": settings, "dipPlan": dip_result,
+                    "portfolio": portfolio, "fx": dict(FX), "manualAccounts": manual_portfolios(config['manual_accounts']), "sessionKey": SESSION_KEY,
                     "account": account, "config": config, "configRevision": revision,
                     "configError": config_error, "now": time.time()})
             except (ValueError, OSError) as exc:
@@ -234,13 +303,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed_host() or self.headers.get("X-Session-Key") != SESSION_KEY:
             return self.json_reply(403, {"error": "요청을 다시 시도하세요."})
-        if self.path not in ("/api/settings", "/api/preset"):
+        if self.path not in ("/api/settings", "/api/preset", "/api/manual-accounts", "/api/edit-config"):
             return self.json_reply(404, {"error": "Not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 49152:
                 raise ValueError("설정 크기 오류")
             payload = json.loads(self.rfile.read(length))
+            if self.path == '/api/edit-config':
+                open_config_editor()
+                return self.json_reply(200, {'ok': True})
+            if self.path == '/api/manual-accounts':
+                CONFIGS.save_manual_accounts(payload.get('manual_accounts'), payload.get('configRevision'))
+                return self.json_reply(200, {'ok': True})
             if self.path == '/api/preset':
                 props = payload.get('properties', {})
                 if not isinstance(props, dict) or set(props) - {'portfoliojson', 'kbconnect', 'kbprofile'}:
@@ -259,6 +334,8 @@ class Handler(BaseHTTPRequestHandler):
             self.json_reply(200, {"ok": True})
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             self.json_reply(400, {"error": str(exc) or "설정 값을 확인하세요."})
+        except OSError:
+            self.json_reply(503, {'error': 'JSON 편집기를 열지 못했습니다. Edit Config.cmd를 실행하세요.'})
 
 
 def main():

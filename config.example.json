@@ -7,10 +7,45 @@
     "rsi_period": 14,
     "history_range": "1y"
   },
+  "dip_strategy": {
+    "enabled": false,
+    "signal_symbol": "QQQM",
+    "lookback_sessions": 252,
+    "starting_cash_krw": 0,
+    "cash_adjustment_krw": 0,
+    "spend_remaining_percent": 30,
+    "levels_percent": [
+      10,
+      15,
+      20,
+      30
+    ],
+    "executions": []
+  },
   "account": {
     "enabled": true,
     "profile": "default"
   },
+  "manual_accounts": [
+    {
+      "id": "isa",
+      "name": "KB ISA",
+      "currency": "KRW",
+      "as_of": "",
+      "cash": null,
+      "cash_target_percent": null,
+      "holdings": []
+    },
+    {
+      "id": "irp",
+      "name": "KB IRP",
+      "currency": "KRW",
+      "as_of": "",
+      "cash": null,
+      "cash_target_percent": null,
+      "holdings": []
+    }
+  ],
   "rebalance": {
     "cash_target_percent": 0,
     "drift_threshold_pp": 5,

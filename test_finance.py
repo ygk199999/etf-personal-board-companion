@@ -9,6 +9,69 @@ def response(body):
     return {"dataHeader": {"resultCode": "200", "processFlag": "A"}, "dataBody": body}
 
 
+class DipPlanTests(unittest.TestCase):
+    def setUp(self):
+        import time
+        from configuration import validate_dip_strategy
+        self.config = validate_dip_strategy({'enabled': True, 'starting_cash_krw': 10000000})
+        self.now = int(time.time())
+
+    def quote(self, prices):
+        return {'fetchedAt': self.now, 'completedCloses': [(self.now-(len(prices)-i-1)*86400, p) for i,p in enumerate(prices)]}
+
+    def test_ladder_does_not_spend_without_actual_fills(self):
+        from finance import dip_plan
+        runtime, plan = dip_plan(self.config, self.quote([100, 70]), {})
+        self.assertEqual([r['amountKrw'] for r in plan['rows']], [3000000, 2100000, 1470000, 1029000])
+        self.assertTrue(all(r['status']=='due' for r in plan['rows']))
+        self.assertEqual(plan['cashKrw'], 10000000)
+        again, result = dip_plan(self.config, self.quote([100,70]), runtime)
+        self.assertEqual(again, runtime)
+        self.assertEqual(result['cashKrw'], 10000000)
+
+    def test_fill_and_recovery_preserve_balance_and_reset_steps(self):
+        from finance import dip_plan
+        runtime, _ = dip_plan(self.config, self.quote([100,85]), {})
+        self.config['executions'] = [{'cycle': 1, 'level_percent': 10, 'amount_krw': 3000000, 'date': '2026-11-24'}]
+        runtime, plan = dip_plan(self.config, self.quote([100,85]), runtime)
+        self.assertEqual(plan['cashKrw'], 7000000)
+        self.assertEqual(plan['rows'][0]['status'], 'completed')
+        self.assertEqual(plan['rows'][1]['amountKrw'], 2100000)
+        # Add one new completed session after the stored timestamp.
+        quote = self.quote([100,85,100])
+        quote['completedCloses'] = [(t+86400,p) for t,p in quote['completedCloses']]
+        runtime, plan = dip_plan(self.config, quote, runtime)
+        self.assertEqual(plan['cycle'], 2)
+        self.assertEqual(plan['cashKrw'], 7000000)
+        self.assertTrue(all(r['status']=='waiting' for r in plan['rows']))
+
+    def test_reference_does_not_roll_down_during_decline(self):
+        from finance import dip_plan
+        runtime, _ = dip_plan(self.config, self.quote([100,89]), {})
+        quote = self.quote([89,85]);quote['completedCloses'] = [(t+86400,p) for t,p in quote['completedCloses']]
+        runtime, plan = dip_plan(self.config, quote, runtime)
+        self.assertEqual(plan['referenceClose'], 100)
+        self.assertAlmostEqual(plan['drawdown'], -15)
+
+    def test_stale_data_and_changed_signal(self):
+        from finance import dip_plan
+        quote=self.quote([100,85]);quote['fetchedAt']-=600
+        _, plan=dip_plan(self.config,quote,{})
+        self.assertFalse(plan['ready'])
+        runtime,_=dip_plan(self.config,self.quote([100,85]),{})
+        self.config['signal_symbol']='QQQ'
+        _,plan=dip_plan(self.config,self.quote([100,85]),runtime)
+        self.assertEqual(plan['cycle'],2)
+
+    def test_invalid_fills_rejected(self):
+        from configuration import validate_dip_strategy
+        fill={'cycle':1,'level_percent':10,'amount_krw':3000000,'date':'2026-11-24'}
+        with self.assertRaises(ValueError):
+            validate_dip_strategy({**self.config,'executions':[fill,fill]})
+        with self.assertRaises(ValueError):
+            validate_dip_strategy({**self.config,'executions':[{**fill,'amount_krw':10000001}]})
+
+
 class FinanceTests(unittest.TestCase):
     def test_drawdown_is_path_dependent(self):
         result = indicators([100, 120, 60, 110])
