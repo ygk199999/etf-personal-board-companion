@@ -5,7 +5,10 @@ Wallpaper Engine에 시세·RSI·MDD·보유 자산 데이터를 제공하는 Wi
 ## 설치
 
 1. 이 저장소를 다운로드하고 Windows에 Python 3.13을 설치합니다.
-2. `Start ETF Board.cmd`를 실행합니다. 별도 Python 패키지는 필요하지 않습니다.
+2. `Start ETF Board.cmd`를 한 번 실행합니다. 별도 Python 패키지는 필요하지 않습니다.
+   로그인 시 로컬 서버 자동 실행이 등록되고, 서버가 종료되면 15초 간격 확인 후 재시작합니다.
+   창은 숨겨 실행합니다. 자동 실행을 해제하려면 Windows 시작프로그램 폴더의
+   `ETF Personal Wallpaper` 바로가기를 삭제하고 로컬 상태 폴더의 `supervisor.pid` 프로세스를 종료합니다.
 3. `http://127.0.0.1:8766/`에서 미리보기를 확인합니다.
 4. Steam 창작마당에서 월페이퍼를 구독합니다. 로컬 서버는 실행 중이어야 합니다.
 

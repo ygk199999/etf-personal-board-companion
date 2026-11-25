@@ -177,7 +177,10 @@ def refresh_loop():
                 ACCOUNT, ACCOUNT_ERROR = None, None
         dip = config['dip_strategy']
         key = (symbols, ind["history_range"], ind["rsi_period"], dip['enabled'], dip['signal_symbol'], account_config['enabled'], account_config['profile'], store.stat().st_mtime_ns if store.exists() else 0)
-        if key == last_key and time.time() - last_run < config["refresh_seconds"]:
+        with LOCK:
+            retry_needed = any(not MARKET.get(s) or MARKET[s].get('error') for s in symbols) or FX.get('error') or (dip['enabled'] and (not DIP_QUOTE or DIP_QUOTE.get('error')))
+        interval = min(15, config['refresh_seconds']) if retry_needed else config['refresh_seconds']
+        if key == last_key and time.time() - last_run < interval:
             STOP.wait(1)
             continue
         with ThreadPoolExecutor(max_workers=4) as pool:
