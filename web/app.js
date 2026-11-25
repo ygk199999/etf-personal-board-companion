@@ -79,23 +79,40 @@ function render(){
  $('portfolioStatus').textContent=p.ready?p.needsRebalance?`최대 비중 차이 ${fmt(p.maxGap,1)}%p · 허용 오차 ${fmt(state.settings.threshold,1)}%p · 추가 투입금 반영`:`허용 오차 ${fmt(state.settings.threshold,1)}%p 이내 · 현재 비중 유지`:p.reason;
  if(p.ready&&bad)$('portfolioStatus').textContent+=' · 시세 지연으로 이전 값이 포함될 수 있습니다.';
  $('scopeNote').textContent=state.account.connected?`실제 USD 보유 자산 기준 · 원화 예수금은 별도 표시${state.account.excluded?` · USD 이외 보유 ${state.account.excluded}개 항목 미반영`:''} · 수수료·세금 미반영`:`설정한 ${symbols.length}개 종목 + USD 현금 기준 · 수수료·세금 미반영 · 소수점 이론 수량`;
+ if(state.contributionPlan?.enabled){
+  const c=state.contributionPlan,cfg=state.config.contribution_plan;
+  $('maxGap').textContent=c.ready?`${fmt(Math.max(...c.rows.map(r=>Math.abs((r.weight??r.target)-r.target))),1)}%p`:'—';
+  $('driftStatus').textContent=c.ready?'신규 입금으로 목표 배분':'계좌·시세 확인 후 배분';
+  for(const [i,r]of(p.rows||[]).entries()){
+   const target=$('rows').children[i]?.querySelector('.target');
+   if(target&&cfg.core_symbols.includes(r.symbol))target.textContent=`/ 일반 ETF 그룹 ${fmt(cfg.core_target_percent,0)}%`;
+   else if(target&&r.symbol===cfg.leveraged_symbol)target.textContent=`/ ${fmt(100-cfg.core_target_percent,0)}%`;
+  }
+ }
 }
 function renderDipPlan(){
  let panel=$('dipPlan');
  if(!panel){panel=node('section','dip-plan');panel.id='dipPlan';panel.setAttribute('aria-label','하락장 분할 매수 계획');$('cards').before(panel);}
- const p=state.dipPlan;panel.hidden=!p?.enabled;if(!p?.enabled)return;
+ const p=state.dipPlan,c=state.contributionPlan;panel.hidden=!p?.enabled&&!c?.enabled;if(panel.hidden)return;
  panel.replaceChildren();
+ if(c?.enabled){
+  const cfg=state.config.contribution_plan,automatic=cfg.funding_source==='usd_cash';const title=node('div','dip-heading');title.append(node('strong','',`${cfg.core_buy_symbol}·${cfg.leveraged_symbol} 매수 후 전체 비중 ${fmt(cfg.core_target_percent,0)}:${fmt(100-cfg.core_target_percent,0)}`),node('span','',`${automatic?'KB 달러 예수금':'추가 투입'} ${fmt(c.amount??(automatic?null:cfg.amount),2)} ${c.currency||(automatic?'USD':cfg.currency)}`));panel.append(title,node('p','dip-status',c.message));
+  if(c.ready){const allocation=node('div','contribution-steps');for(const r of c.rows){const box=node('div','dip-step');box.append(node('b','',`${r.symbol} ${r.symbol===state.config.contribution_plan.core_buy_symbol?'계열 ':''}현재 ${r.weight==null?'—':fmt(r.weight,1)+'%'}`),node('strong','',`추가 매수 ${money(r.buyUsd)}`),node('span','',`약 ${fmt(r.buyKrw,0)}원 · ${fmt(r.shares,4)}주`),node('span','',`매수 후 ${r.afterWeight==null?'—':fmt(r.afterWeight,1)+'%'} / 목표 ${fmt(r.target,0)}%`));allocation.append(box);}panel.append(allocation);}
+  panel.append(node('p','dip-reference',`${cfg.core_symbols.join('·')} 보유금액 합산 · 매도 없이 투입금만 배분 · ${automatic?'KB 달러 예수금 자동 반영':'JSON contribution_plan.amount 수정'} · 소수점 이론 수량 / 주문가능금액·비용 미반영`));
+  if(c.excludedSymbols?.length)panel.append(node('p','dip-reference',`기타 보유 ${c.excludedSymbols.join(', ')}는 이 두 그룹의 비중 계산에서 제외`));
+ }
+ if(!p?.enabled)return;
  const heading=node('div','dip-heading');
- heading.append(node('strong','',`${p.strategyName||'하락장 분할 매수'} · ${p.symbol}`),node('span','',`대기자금 ${fmt(p.cashKrw,0)}원`));
+ heading.append(node('strong','',`${p.strategyName||'하락장 분할 매수'} · ${p.symbol}`),node('span','',p.signalOnly?'고점 대비 낙폭 알림':`대기자금 ${fmt(p.cashKrw,0)}원`));
  panel.append(heading,node('p','dip-status',p.message));
  if(p.ready){
   panel.append(node('p','dip-reference',`${p.cycle}회차 · 기준 고점 $${fmt(p.referenceClose)} (${shortDate(p.referenceAt)}) · 고점 대비 ${pct(p.drawdown)} · 완료 종가 ${shortDate(p.signalAt)}`));
   const steps=node('div','dip-steps');
-  for(const row of p.rows){const step=node('div',`dip-step ${row.status}`);step.append(node('b','',`−${fmt(row.level,0)}%`),node('strong','',`${fmt(row.amountKrw,0)}원`),node('span','',({completed:'체결 기록됨',due:'매수 조건 충족',waiting:'대기'})[row.status]));steps.append(step);}
+  for(const row of p.rows){const step=node('div',`dip-step ${row.status}`);step.append(node('b','',`−${fmt(row.level,0)}%`));if(!p.signalOnly)step.append(node('strong','',`${fmt(row.amountKrw,0)}원`));step.append(node('span','',({completed:'체결 기록됨',due:'매수 조건 충족',waiting:'대기'})[row.status]));steps.append(step);}
   panel.append(steps);
  }
  const rule=p.allocationMode==='equal_parts'?`준비자금 ${p.parts}등분 · 고점 회복 후 남은 자금으로 새 회차`:`단계마다 남은 현금의 ${fmt(p.spendPercent,0)}%`;
- panel.append(node('p','dip-reference',`월 적립 유지 · ${rule} · 실제 체결은 상단 JSON 편집에서 기록`));
+ panel.append(node('p','dip-reference',p.signalOnly?'월 적립 유지 · 낙폭 조건은 추가 매수 알림 · 고정 대기자금 배정 없이 실제 투입금으로 위 비중 계산':`월 적립 유지 · ${rule} · 실제 체결은 상단 JSON 편집에서 기록`));
 }
 let manualRevision=null;
 function renderManualAccounts(){

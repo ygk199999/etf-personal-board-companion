@@ -8,8 +8,9 @@
     "history_range": "1y"
   },
   "dip_strategy": {
-    "enabled": false,
-    "signal_symbol": "QQQM",
+    "enabled": true,
+    "signal_only": true,
+    "signal_symbol": "QQQ",
     "lookback_sessions": 252,
     "starting_cash_krw": 0,
     "cash_adjustment_krw": 0,
@@ -28,6 +29,19 @@
   "account": {
     "enabled": true,
     "profile": "default"
+  },
+  "contribution_plan": {
+    "enabled": true,
+    "core_symbols": [
+      "QQQ",
+      "QQQM"
+    ],
+    "core_buy_symbol": "QQQ",
+    "leveraged_symbol": "QLD",
+    "core_target_percent": 50,
+    "funding_source": "usd_cash",
+    "currency": "KRW",
+    "amount": 0
   },
   "manual_accounts": [
     {
@@ -65,25 +79,9 @@
       "quantity": 0
     },
     {
-      "symbol": "SPY",
-      "name": "SPDR S&P 500 ETF Trust",
-      "category": "S&P 500",
-      "color": "#8fbca5",
-      "target_percent": null,
-      "quantity": 0
-    },
-    {
-      "symbol": "TLT",
-      "name": "iShares 20+ Year Treasury Bond",
-      "category": "미국 장기 국채",
-      "color": "#92afc4",
-      "target_percent": null,
-      "quantity": 0
-    },
-    {
-      "symbol": "SCHD",
-      "name": "Schwab US Dividend Equity ETF",
-      "category": "미국 배당주",
+      "symbol": "QLD",
+      "name": "ProShares Ultra QQQ",
+      "category": "나스닥 100 · 일일 2배",
       "color": "#be9d86",
       "target_percent": null,
       "quantity": 0

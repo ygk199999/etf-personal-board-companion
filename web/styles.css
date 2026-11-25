@@ -26,3 +26,5 @@
 @media(max-width:479px){.dip-steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(orientation:portrait) and (min-width:768px){.card{padding:16px}.card .chart{height:32px}.dip-plan{padding:12px 14px}}
 @media(orientation:portrait) and (min-width:768px){.workspace{grid-template-rows:auto minmax(830px,1fr) minmax(630px,1fr) auto auto}.allocation-ring{grid-row:1/5}.balance-panel{padding:16px 24px;gap:8px 24px}.cash-summary{gap:8px}.allocation-layout{grid-template-rows:auto minmax(260px,1fr)}}
+.contribution-steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.contribution-steps+.dip-reference{margin-bottom:16px}.contribution-steps .dip-step{padding:12px}.contribution-steps strong{font-size:14px}
+@media(max-width:479px){.contribution-steps{grid-template-columns:1fr}}

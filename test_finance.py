@@ -103,6 +103,77 @@ class DipPlanTests(unittest.TestCase):
         self.assertLessEqual(sum(r['amountKrw'] for r in plan['rows']),1000000)
 
 
+class ContributionPlanTests(unittest.TestCase):
+    def setUp(self):
+        import time
+        from configuration import validate_contribution_plan
+        self.config=validate_contribution_plan({'enabled':True,'currency':'USD','amount':200})
+        self.quotes={s:{'price':100,'fetchedAt':time.time()} for s in ['QQQ','QQQM','QLD']}
+        self.fx={'rate':1000,'fetchedAt':time.time()}
+
+    def plan(self,positions,blocked=None):
+        from finance import contribution_plan
+        return contribution_plan(self.config,positions,self.quotes,self.fx,blocked)
+
+    def test_shortfall_uses_only_new_money_without_sales(self):
+        p=self.plan({'QQQ':10})
+        self.assertEqual([r['buyUsd'] for r in p['rows']],[0,200])
+        self.assertFalse(p['exact'])
+        self.assertAlmostEqual(p['rows'][1]['afterWeight'],100/6)
+
+    def test_qqqm_is_counted_in_core_bucket_and_reaches_target(self):
+        self.config['amount']=1000
+        p=self.plan({'QQQ':4,'QQQM':6})
+        self.assertEqual([r['buyUsd'] for r in p['rows']],[0,1000])
+        self.assertTrue(p['exact'])
+
+    def test_balanced_and_reverse_imbalance(self):
+        p=self.plan({'QQQ':10,'QLD':10})
+        self.assertEqual([r['buyUsd'] for r in p['rows']],[100,100])
+        p=self.plan({'QLD':10})
+        self.assertEqual([r['buyUsd'] for r in p['rows']],[200,0])
+
+    def test_krw_budget_fx_and_stale_account(self):
+        self.config.update(currency='KRW',amount=200000)
+        p=self.plan({'QQQ':10})
+        self.assertEqual(p['rows'][1]['buyUsd'],200)
+        self.assertEqual(p['rows'][1]['buyKrw'],200000)
+        self.fx['error']='offline'
+        self.assertFalse(self.plan({'QQQ':10})['ready'])
+        self.assertFalse(self.plan({'QQQ':10},'stale account')['ready'])
+
+    def test_budget_zero_and_other_holdings_not_counted(self):
+        self.config['amount']=0
+        p=self.plan({'QQQ':10,'SPY':999})
+        self.assertEqual(sum(r['buyUsd'] for r in p['rows']),0)
+        self.assertEqual(p['excludedSymbols'],['SPY'])
+
+    def test_automatic_usd_cash_ignores_manual_budget(self):
+        from finance import contribution_plan
+        self.config.update(funding_source='usd_cash',amount=999999,currency='KRW')
+        self.assertFalse(contribution_plan(self.config,{},self.quotes,self.fx)['ready'])
+        p=contribution_plan(self.config,{'QQQM':10},self.quotes,self.fx,usd_cash=200)
+        self.assertEqual(p['amountUsd'],200)
+        self.assertEqual([r['buyUsd'] for r in p['rows']],[0,200])
+        self.assertEqual(p['currency'],'USD')
+
+    def test_drawdown_signals_do_not_require_a_cash_reserve(self):
+        import time
+        from configuration import validate_dip_strategy
+        from finance import dip_plan
+        cfg=validate_dip_strategy({'enabled':True,'signal_only':True,'starting_cash_krw':0,'levels_percent':[15,20,25,30,35]})
+        now=time.time()
+        _,p=dip_plan(cfg,{'fetchedAt':now,'completedCloses':[(now-86400,100),(now,80)]},{})
+        self.assertEqual([r['status'] for r in p['rows']],['due','due','waiting','waiting','waiting'])
+        self.assertTrue(all(r['amountKrw'] is None for r in p['rows']))
+
+    def test_invalid_plan_configuration(self):
+        from configuration import validate_contribution_plan
+        for values in [{'amount':-1},{'core_symbols':['QQQ','QLD']},{'currency':'EUR'}]:
+            with self.assertRaises(ValueError):
+                validate_contribution_plan(values)
+
+
 class FinanceTests(unittest.TestCase):
     def test_drawdown_is_path_dependent(self):
         result = indicators([100, 120, 60, 110])

@@ -84,6 +84,8 @@ def validate_dip_strategy(value):
     if not isinstance(value, dict):
         raise ValueError('dip_strategy는 JSON 객체여야 합니다.')
     value = copy.deepcopy(value)
+    if not isinstance(value.setdefault('signal_only', False), bool):
+        raise ValueError('signal_only는 true 또는 false입니다.')
     mode = value.setdefault('allocation_mode', 'remaining_percent')
     if mode not in ('remaining_percent', 'equal_parts'):
         raise ValueError('allocation_mode는 remaining_percent 또는 equal_parts입니다.')
@@ -159,6 +161,30 @@ def manual_portfolios(accounts):
     return results
 
 
+def validate_contribution_plan(value):
+    if not isinstance(value, dict):
+        raise ValueError('contribution_plan은 JSON 객체입니다.')
+    value=copy.deepcopy(value)
+    if not isinstance(value.setdefault('enabled',False),bool):
+        raise ValueError('contribution_plan.enabled는 true 또는 false입니다.')
+    core=value.setdefault('core_symbols',['QQQ','QQQM'])
+    if not isinstance(core,list) or not 1<=len(core)<=12 or any(not isinstance(s,str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-]{0,29}',s) for s in core) or len(set(core))!=len(core):
+        raise ValueError('core_symbols는 중복 없는 종목 배열입니다.')
+    for key,default in [('core_buy_symbol','QQQ'),('leveraged_symbol','QLD')]:
+        symbol=value.setdefault(key,default)
+        if not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9.\-]{0,29}',symbol):
+            raise ValueError('매수 종목 코드를 확인하세요.')
+    if value['core_buy_symbol'] not in core or value['leveraged_symbol'] in core:
+        raise ValueError('일반 ETF와 레버리지 ETF는 구분해야 합니다.')
+    value['core_target_percent']=bounded(value.get('core_target_percent',50),0,100,'core_target_percent')
+    value['amount']=bounded(value.get('amount',0),0,1e15,'추가 투입금')
+    if value.setdefault('currency','KRW') not in ('KRW','USD'):
+        raise ValueError('추가 투입금 통화는 KRW 또는 USD입니다.')
+    if value.setdefault('funding_source','manual') not in ('manual','usd_cash'):
+        raise ValueError('funding_source는 manual 또는 usd_cash입니다.')
+    return value
+
+
 def validate_config(data):
     if not isinstance(data, dict):
         raise ValueError("설정 최상위는 JSON 객체여야 합니다.")
@@ -222,6 +248,7 @@ def validate_config(data):
     data['manual_accounts'] = validate_manual_accounts(data.get('manual_accounts', [
         {'id': 'isa', 'name': 'KB ISA'}, {'id': 'irp', 'name': 'KB IRP'}]))
     data['dip_strategy'] = validate_dip_strategy(data.get('dip_strategy', {}))
+    data['contribution_plan'] = validate_contribution_plan(data.get('contribution_plan', {}))
     return data
 
 
@@ -321,11 +348,11 @@ class ConfigStore:
                     elif isinstance(item, list):
                         for child in item: no_secrets(child)
                 no_secrets(preset)
-                allowed = {'title', 'currency', 'refresh_seconds', 'indicators', 'rebalance', 'assets', 'account', 'manual_accounts', 'dip_strategy'}
+                allowed = {'title', 'currency', 'refresh_seconds', 'indicators', 'rebalance', 'assets', 'account', 'manual_accounts', 'dip_strategy', 'contribution_plan'}
                 if set(preset) - allowed:
                     raise ValueError('설정 JSON에 지원하지 않는 최상위 항목이 있습니다.')
                 for key, item in preset.items():
-                    if key in ('indicators', 'rebalance', 'account', 'dip_strategy') and isinstance(item, dict):
+                    if key in ('indicators', 'rebalance', 'account', 'dip_strategy', 'contribution_plan') and isinstance(item, dict):
                         config.setdefault(key, {}).update(item)
                     elif key == 'assets' and isinstance(item, list):
                         previous = {a['symbol']: a for a in config['assets']}

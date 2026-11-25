@@ -1,5 +1,22 @@
 config.json 편집 안내
 
+QQQ·QLD 신규 입금 배분 (contribution_plan)
+- 현재 보유 평가금액 + 이번 투입금을 합쳐 QQQ 계열 50%, QLD 50%에 가깝게 매수만 배분합니다.
+- QQQM은 core_symbols의 QQQ 계열로 합산합니다. 기존 QQQM 보유를 매도하도록 안내하지 않습니다.
+- 매수 대상은 core_buy_symbol(QQQ)과 leveraged_symbol(QLD)입니다.
+- 새 돈이 부족하면 부족 비중 쪽에 전액 배분하고, 목표 달성 불가와 매수 후 예상 비중을 표시합니다.
+- funding_source: usd_cash는 KB USD 예수금 조회값을 투입금으로 자동 반영합니다.
+  예수금은 실제 주문 가능액과 다를 수 있고, 미체결·수수료·세금은 반영하지 않습니다.
+- 수동 계획은 funding_source를 manual로 바꾸고 currency(KRW/USD), amount(추가 금액)를 입력합니다.
+  usd_cash 모드에서는 수동 amount를 더하지 않습니다. 원화 예수금은 자동 환전해 사용하지 않습니다.
+- core_target_percent는 QQQ 계열 목표이며 나머지는 QLD 목표입니다. 기본 50입니다.
+- 다른 보유 종목은 두 그룹의 비중 계산에서 제외하며 화면에 이를 표시합니다.
+- 월 정기 적립 유지, 황현희식 -15/-20/-25/-30/-35%는 추가 매수 알림 기준으로 유지합니다.
+- dip_strategy.signal_only=true에서는 고정 대기자금·단계별 금액을 안내하지 않습니다.
+  실제 투입금은 위 신규 입금 계획으로 배분하며, 알림이 주문하거나 현금을 차감하지 않습니다.
+- 기존 starting_cash_krw 등은 과거 기록 호환용입니다. signal_only에서는 활성 매수 예산이 아닙니다.
+- 아래 전체 계좌 표는 보유내역입니다. 이 모드에서는 기존 리밸런싱 매도 안내를 표시하지 않습니다.
+
 시세 자동 실행
 - Start ETF Board.cmd를 한 번 실행하면 로그인 시 숨김 서버 자동 실행이 등록됩니다.
 - 서버가 예기치 않게 종료되면 감시 프로세스가 15초 간격 확인 후 재시작합니다.
@@ -119,6 +136,7 @@ KB 실제 인증·해외주식 잔고·달러 예수금 조회 확인.
 320, 390, 768, 820, 1024, 1440 화면 폭 확인.
 하락장 분할 매수 (dip_strategy)
 ----------------------------
+signal_only=true: 낙폭 알림만 사용합니다. 아래 금액/체결 안내는 signal_only=false인 기존 대기자금 모드용입니다.
 enabled: 사용 여부. signal_symbol: 낙폭 신호 종목 (기본 QQQM).
 lookback_sessions: 시작 기준 고점 산정 기간 (기본 252 완료 거래일 종가).
 starting_cash_krw: 최초 대기자금. cash_adjustment_krw: 이후 추가/인출한 순금액 누계.

@@ -14,7 +14,7 @@ import urllib.request
 from urllib.parse import quote as quote_url
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from finance import indicators, validate_settings, rebalance, dip_plan
+from finance import indicators, validate_settings, rebalance, dip_plan, contribution_plan
 from kb import Client, profile_store, KBResponseError
 from configuration import ConfigStore, settings_from_config, manual_portfolios
 
@@ -283,7 +283,18 @@ class Handler(BaseHTTPRequestHandler):
                         for row in portfolio.get("rows", []):
                             row["delta"] = row["shares"] = None
                     dip_result = current_dip_plan(config['dip_strategy'])
+                    contribution_quotes = {**MARKET, **portfolio_quotes}
+                    blocked = None
+                    if enabled and (not account_matches or ACCOUNT_ERROR or time.time()-ACCOUNT['syncedAt']>max(300,config['refresh_seconds']*2.5)):
+                        blocked = 'KB 최신 잔고 확인 후 추가 매수를 계산합니다.'
+                    contribution_result = contribution_plan(config['contribution_plan'], settings['quantities'], contribution_quotes, FX, blocked, settings['cash'] if account_matches else None)
+                    if config['contribution_plan']['enabled']:
+                        portfolio['ready'] = False
+                        portfolio['reason'] = '신규 입금 배분은 상단 QQQ·QLD 계획 참고 · 아래는 전체 계좌 보유내역'
+                        for row in portfolio.get('rows', []):
+                            row['delta'] = row['shares'] = None
                 return self.json_reply(200, {"quotes": quotes, "settings": settings, "dipPlan": dip_result,
+                    "contributionPlan": contribution_result,
                     "portfolio": portfolio, "fx": dict(FX), "manualAccounts": manual_portfolios(config['manual_accounts']), "sessionKey": SESSION_KEY,
                     "account": account, "config": config, "configRevision": revision,
                     "configError": config_error, "now": time.time()})

@@ -4,6 +4,58 @@ import math
 SYMBOLS = ("QQQ", "SPY", "TLT", "SCHD")
 
 
+def contribution_plan(config, positions, quotes, fx, blocked=None, usd_cash=None):
+    """Allocate only new money toward two target buckets, never propose sales."""
+    result = {'enabled': config['enabled'], 'ready': False, 'rows': []}
+    if not config['enabled']:
+        return result
+    if blocked:
+        return {**result, 'message': blocked}
+    core_symbols = config['core_symbols']
+    leveraged = config['leveraged_symbol']
+    values = [0., 0.]
+    for symbol, quantity in positions.items():
+        if not quantity or symbol not in [*core_symbols, leveraged]:
+            continue
+        q = quotes.get(symbol, {})
+        if q.get('error') or not q.get('price'):
+            return {**result, 'message': f'{symbol} 보유 평가 시세 확인 필요'}
+        values[1 if symbol == leveraged else 0] += quantity*q['price']
+    source=config.get('funding_source','manual')
+    if source=='usd_cash' and usd_cash is None:
+        return {**result,'message':'KB 달러 예수금 조회 후 배분합니다.'}
+    entered_amount = usd_cash if source=='usd_cash' else config['amount']
+    currency = 'USD' if source=='usd_cash' else config['currency']
+    amount = entered_amount
+    rate = fx.get('rate')
+    if currency == 'KRW' and amount:
+        if not rate or fx.get('error') or __import__('time').time()-fx.get('fetchedAt',0)>300:
+            return {**result, 'message': '추가 원화 투입금 환산을 위한 최신 환율 대기'}
+        amount /= rate
+    total = sum(values)
+    target = config['core_target_percent']/100
+    core_buy = min(amount, max(0., (total+amount)*target-values[0]))
+    buys = [core_buy, amount-core_buy]
+    rows=[]
+    for i, symbol in enumerate([config['core_buy_symbol'], leveraged]):
+        q=quotes.get(symbol,{})
+        if q.get('error') or not q.get('price'):
+            return {**result, 'message': f'{symbol} 매수 수량 계산 시세 대기'}
+        if q.get('fetchedAt') and __import__('time').time()-q['fetchedAt']>300:
+            return {**result, 'message': f'{symbol} 최신 시세 갱신 대기'}
+        rows.append({'symbol': symbol, 'value': values[i], 'weight': values[i]/total*100 if total else None,
+                     'target': (target if i==0 else 1-target)*100, 'buyUsd': buys[i],
+                     'buyKrw': buys[i]*rate if rate else None, 'shares': buys[i]/q['price'],
+                     'afterWeight': (values[i]+buys[i])/(total+amount)*100 if total+amount else None})
+    exact = total+amount>0 and abs((values[0]+core_buy)/(total+amount)-target)<1e-8
+    message = '추가 투입금 입력 필요 · 보유 비중을 반영해 매수만 계산' if not amount else '추가 매수 후 목표 비중 도달' if exact else '이번 투입금으로 목표 비중 도달 불가 · 부족한 쪽에 우선 매수'
+    if source=='usd_cash' and not amount:
+        message='KB 달러 예수금 대기 · 입금·환전 반영 후 자동 배분'
+    return {**result, 'ready': True, 'rows': rows, 'message': message, 'amount': entered_amount,
+            'currency': currency, 'fundingSource':source, 'amountUsd': amount, 'exact': exact,
+            'coreSymbols': core_symbols, 'excludedSymbols': [s for s,v in positions.items() if v and s not in [*core_symbols, leveraged]]}
+
+
 def dip_plan(config, quote, runtime):
     """Read-only purchase guidance. Only recorded actual fills consume the reserve."""
     import copy
@@ -15,6 +67,7 @@ def dip_plan(config, quote, runtime):
             'spendPercent': config['spend_remaining_percent'], 'ready': False, 'rows': [],
             'strategyName': config.get('strategy_name', '하락장 분할 매수'),
             'allocationMode': config.get('allocation_mode', 'remaining_percent'), 'parts': len(config['levels_percent'])}
+    base['signalOnly'] = config.get('signal_only', False)
     if not config['enabled']:
         return state, {**base, 'message': '하락장 추가 매수 꺼짐'}
     bars = (quote or {}).get('completedCloses', [])
@@ -70,9 +123,11 @@ def dip_plan(config, quote, runtime):
         if not fill:
             projected -= amount
         reached = drawdown >= level-1e-8
-        rows.append({'level': level, 'amountKrw': amount, 'status': 'completed' if fill else 'due' if reached and amount>0 else 'waiting'})
+        rows.append({'level': level, 'amountKrw': None if base['signalOnly'] else amount, 'status': 'completed' if fill else 'due' if reached and (base['signalOnly'] or amount>0) else 'waiting'})
     due = [r for r in rows if r['status']=='due']
     message = f"{len(due)}개 단계 조건 충족 · 실제 매수 후 체결 기록 필요" if due else '다음 낙폭 조건 대기 · 정기 적립 유지'
+    if base['signalOnly']:
+        message = f"{len(due)}개 낙폭 조건 충족 · 투입금은 현재 보유비중에 맞춰 배분" if due else '추가 매수 낙폭 대기 · 정기 적립 유지'
     return state, {**base, 'ready': True, 'cycle': state['cycle'], 'referenceClose': state['anchor'],
                    'referenceAt': state['anchorAt'], 'signalClose': close, 'signalAt': last_ts,
                    'drawdown': -drawdown, 'rows': rows, 'message': message}
